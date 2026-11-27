@@ -17,7 +17,7 @@ SponsorBlock skips sponsor, self-promotion and interaction segments. It marks ot
 Install Rust 1.92 or newer, JDK 17, Android SDK Platform 36, Build Tools 36, Android NDK 29, and Gradle 8.14.3. Set `ANDROID_HOME` and `ANDROID_NDK_HOME` to the SDK and NDK directories.
 
 ```powershell
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ferry --version 0.1.0 --locked
 cargo ferry check
 cargo test --locked --lib
