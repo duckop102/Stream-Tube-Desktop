@@ -22,6 +22,8 @@ android {
         main {
             manifest.srcFile new File(ferryInputs, 'AndroidManifest.xml')
             res.srcDir new File(ferryGenerated, 'res')
+            // Stream Tube's adaptive launcher icon (the manifest points at @mipmap/ic_stream_tube)
+            res.srcDir 'launcher-res'
             java.srcDirs(
                 new File(ferryGenerated, 'java'),
                 slintJava,

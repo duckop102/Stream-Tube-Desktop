@@ -44,6 +44,14 @@ if (-not $gradleManifest.SelectSingleNode("/manifest/uses-permission[@*[local-na
     $permission.SetAttribute('name', $androidNamespace, $installPermission) | Out-Null
     $gradleManifest.DocumentElement.InsertBefore($permission, $app) | Out-Null
 }
+# Adaptive launcher icon from google-play/launcher-res, so launchers mask it instead of cropping.
+$icon = '@mipmap/ic_stream_tube'
+$app.SetAttribute('icon', $androidNamespace, $icon) | Out-Null
+$app.SetAttribute('roundIcon', $androidNamespace, $icon) | Out-Null
+foreach ($component in $app.SelectNodes('activity | activity-alias')) {
+    if ($component.HasAttribute('icon', $androidNamespace)) { $component.SetAttribute('icon', $androidNamespace, $icon) | Out-Null }
+    if ($component.HasAttribute('roundIcon', $androidNamespace)) { $component.SetAttribute('roundIcon', $androidNamespace, $icon) | Out-Null }
+}
 $gradleManifest.Save((Join-Path $inputs 'AndroidManifest.xml'))
 
 $metadata = cargo metadata --manifest-path (Join-Path $mobile 'Cargo.toml') --locked --filter-platform aarch64-linux-android --format-version 1 | ConvertFrom-Json

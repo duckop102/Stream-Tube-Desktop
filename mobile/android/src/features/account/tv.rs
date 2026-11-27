@@ -199,13 +199,28 @@ fn tv_call(access_token: &str, endpoint: &str, mut body: Value) -> Result<Value,
 
 /// The signed-in account's display name.
 pub fn account_name(access_token: &str) -> String {
-    tv_call(access_token, "account/accounts_list", json!({ "accountReadMask": { "returnOwner": true } }))
-        .ok()
-        .and_then(|reply| {
-            let item = find(&reply, "accountItem").or_else(|| find(&reply, "accountItemRenderer"))?;
-            item.get("accountName").map(text).filter(|name| !name.is_empty())
-        })
-        .unwrap_or_else(|| "YouTube account".to_owned())
+    account_profile(access_token).0
+}
+
+/// The account name and its profile picture URL (empty when the reply has none).
+pub fn account_profile(access_token: &str) -> (String, String) {
+    let reply = tv_call(access_token, "account/accounts_list", json!({ "accountReadMask": { "returnOwner": true } })).ok();
+    let item = reply
+        .as_ref()
+        .and_then(|reply| find(reply, "accountItem").or_else(|| find(reply, "accountItemRenderer")));
+    let name = item
+        .and_then(|item| item.get("accountName").map(text))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "YouTube account".to_owned());
+    let photo = item
+        .and_then(|item| item.pointer("/accountPhoto/thumbnails"))
+        .and_then(Value::as_array)
+        .and_then(|thumbnails| thumbnails.last())
+        .and_then(|thumbnail| thumbnail.get("url"))
+        .and_then(Value::as_str)
+        .map(|url| if url.starts_with("//") { format!("https:{url}") } else { url.to_owned() })
+        .unwrap_or_default();
+    (name, photo)
 }
 
 /// Channels the account is subscribed to: the per-channel tabs of the TV subscriptions page.

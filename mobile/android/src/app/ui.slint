@@ -58,7 +58,7 @@ export struct VideoRow {
     has-avatar: bool,
 }
 
-enum Glyph { none, home, shorts, following, you, settings, back, search, more, clock, fill, close, bookmark, block, channel, refresh }
+enum Glyph { none, home, shorts, following, you, settings, back, search, more, clock, fill, close, bookmark, block, channel, refresh, gear }
 
 component Symbol inherits Path {
     in property <Glyph> glyph;
@@ -70,7 +70,7 @@ component Symbol inherits Path {
     stroke-width: 1.8px;
     fill: root.filled ? root.tint : transparent;
     fill-rule: evenodd;
-    commands: root.glyph == Glyph.home ? "M 4 10.5 L 12 4 L 20 10.5 L 20 20 L 14.5 20 L 14.5 14.5 L 9.5 14.5 L 9.5 20 L 4 20 Z"
+    commands: root.glyph == Glyph.home ? "M 4.5 9.8 L 12 3.8 L 19.5 9.8 L 19.5 20.2 L 14.2 20.2 L 14.2 14.2 L 9.8 14.2 L 9.8 20.2 L 4.5 20.2 Z"
         : root.glyph == Glyph.shorts ? "M 8.5 3 L 15.5 3 L 18 6 L 18 18 L 15.5 21 L 8.5 21 L 6 18 L 6 6 Z M 10.5 9 L 14.5 12 L 10.5 15 Z"
         : root.glyph == Glyph.following ? "M 4 8.5 L 20 8.5 L 20 20 L 4 20 Z M 6 5.5 L 18 5.5 M 8 2.8 L 16 2.8 M 10.5 11.5 L 14.5 14.2 L 10.5 17 Z"
         : root.glyph == Glyph.you ? "M 12 4 A 3.6 3.6 0 1 1 11.99 4 Z M 5 20 C 5 15.6 8 13.6 12 13.6 C 16 13.6 19 15.6 19 20 Z"
@@ -84,6 +84,7 @@ component Symbol inherits Path {
         : root.glyph == Glyph.bookmark ? "M 7 3.8 L 17 3.8 L 17 20.2 L 12 16.6 L 7 20.2 Z"
         : root.glyph == Glyph.block ? "M 12 3.5 A 8.5 8.5 0 1 1 11.99 3.5 Z M 6 6 L 18 18"
         : root.glyph == Glyph.channel ? "M 3.5 5 L 20.5 5 L 20.5 19 L 3.5 19 Z M 12 8 A 2.4 2.4 0 1 1 11.99 8 Z M 7.5 16.5 C 8 14.2 9.8 13.3 12 13.3 C 14.2 13.3 16 14.2 16.5 16.5"
+        : root.glyph == Glyph.gear ? "M 12 8.6 A 3.4 3.4 0 1 1 11.99 8.6 Z M 10.6 2.8 L 13.4 2.8 L 13.9 5.3 L 15.6 6.3 L 18 5.4 L 19.4 7.8 L 17.5 9.5 L 17.5 14.5 L 19.4 16.2 L 18 18.6 L 15.6 17.7 L 13.9 18.7 L 13.4 21.2 L 10.6 21.2 L 10.1 18.7 L 8.4 17.7 L 6 18.6 L 4.6 16.2 L 6.5 14.5 L 6.5 9.5 L 4.6 7.8 L 6 5.4 L 8.4 6.3 L 10.1 5.3 Z"
         : root.glyph == Glyph.refresh ? "M 19 12 A 7 7 0 1 1 16.6 6.7 M 19 4 L 19 8.5 L 14.5 8.5" : "";
 }
 
@@ -209,14 +210,14 @@ component Logo inherits HorizontalLayout {
         height: 22px;
         y: (parent.height - self.height) / 2;
         border-radius: 7px;
-        background: @linear-gradient(135deg, #ff5a5f 0%, #f0307e 50%, #7a3cf5 100%);
+        background: #ff0033;
         Path {
-            width: 12px;
+            width: 18px;
             height: 12px;
-            viewbox-width: 12;
+            viewbox-width: 18;
             viewbox-height: 12;
             fill: #ffffff;
-            commands: "M 2.5 1 L 11 6 L 2.5 11 Z";
+            commands: "M 0.5 2.2 L 5.5 2.2 L 5.5 3.8 L 0.5 3.8 Z M 0.5 5.2 L 5.5 5.2 L 5.5 6.8 L 0.5 6.8 Z M 0.5 8.2 L 5.5 8.2 L 5.5 9.8 L 0.5 9.8 Z M 8 0.8 L 17.5 6 L 8 11.2 Z";
         }
     }
     Text {
@@ -233,39 +234,57 @@ component NavigationItem inherits Rectangle {
     in property <Glyph> glyph;
     in property <string> label;
     in property <bool> selected;
+    // the You tab shows the account picture once signed in
+    in property <bool> account;
+    in property <image> photo;
+    in property <bool> has-photo;
+    in property <string> initial;
     callback pressed;
 
     horizontal-stretch: 1;
-    height: 52px;
+    height: 50px;
     accessible-role: button;
     accessible-label: label;
     Rectangle {
-        width: 56px;
-        height: 32px;
-        y: 2px;
-        border-radius: 16px;
+        width: 44px;
+        height: 44px;
+        y: 0px;
+        border-radius: 22px;
         background: touch.pressed ? #ffffff1f : #ffffff00;
         animate background { duration: 160ms; easing: ease-out; }
     }
     VerticalLayout {
         alignment: center;
-        spacing: 3px;
+        spacing: 2px;
+        padding-top: 4px;
         Rectangle {
-            height: 24px;
-            Symbol {
-                width: 24px;
-                height: 24px;
-                y: root.selected ? -1px : 0px;
-                animate y { duration: 260ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+            height: 26px;
+            if !root.account: Symbol {
+                width: 26px;
+                height: 26px;
                 glyph: root.glyph;
                 tint: Theme.text;
-                filled: root.selected && root.glyph != Glyph.shorts;
+                filled: root.selected;
+                stroke-width: 1.6px;
+            }
+            if root.account: Rectangle {
+                width: 26px;
+                height: 26px;
+                border-radius: 13px;
+                border-width: root.selected ? 1.5px : 0px;
+                border-color: Theme.text;
+                Avatar {
+                    width: root.selected ? 21px : 24px;
+                    source: root.photo;
+                    has-image: root.has-photo;
+                    initial: root.initial;
+                    background: #00897b;
+                }
             }
         }
         Text {
             text: root.label;
             font-size: 10px;
-            font-weight: root.selected ? 600 : 400;
             color: Theme.text;
             horizontal-alignment: center;
             overflow: elide;
@@ -817,6 +836,9 @@ export component StreamTube inherits Window {
     in property <bool> account-busy;
     in property <string> account-name;
     in property <string> account-initial;
+    in property <string> account-photo-url;
+    in property <image> account-photo;
+    in property <bool> account-has-photo;
     in property <string> account-message;
     in property <string> account-code;
     in property <string> app-version;
@@ -871,7 +893,7 @@ export component StreamTube inherits Window {
     callback authorize-account;
     callback refresh-account;
     callback disconnect-account;
-    callback account-result(int, int, string, string);
+    callback account-result(int, int, string, string, string);
     callback cancel-sign-in;
     callback open-activation;
     callback check-updates;
@@ -915,21 +937,11 @@ export component StreamTube inherits Window {
                 description: UiText.tr("Search");
                 pressed => { root.search-editing = true; root.navigate(Screen.search); }
             }
-            Rectangle {
-                width: 40px;
-                Avatar {
-                    width: 28px;
-                    initial: root.account-connected ? root.account-initial : "";
-                    has-image: false;
-                    background: root.account-connected ? #00897b : Theme.surface;
-                }
-                if !root.account-connected: Symbol {
-                    width: 18px;
-                    height: 18px;
-                    glyph: Glyph.you;
-                    tint: Theme.text;
-                }
-                TouchArea { clicked => { content-focus.focus(); root.navigate(Screen.settings); } }
+            if root.screen == Screen.you: IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Glyph.gear;
+                description: UiText.tr("Settings");
+                pressed => { content-focus.focus(); root.navigate(Screen.settings); }
             }
         }
 
@@ -1274,6 +1286,8 @@ export component StreamTube inherits Window {
                     Avatar {
                         width: 48px;
                         y: 0;
+                        source: root.account-photo;
+                        has-image: root.account-connected && root.account-has-photo;
                         initial: root.account-connected ? root.account-initial : "?";
                         background: root.account-connected ? #00897b : Theme.surface;
                     }
@@ -1439,6 +1453,8 @@ export component StreamTube inherits Window {
                     Avatar {
                         width: 72px;
                         y: 0;
+                        source: root.account-photo;
+                        has-image: root.account-connected && root.account-has-photo;
                         initial: root.account-connected ? root.account-initial : "";
                         background: root.account-connected ? #00897b : Theme.surface;
                         if !root.account-connected: Symbol {
@@ -1800,6 +1816,10 @@ export component StreamTube inherits Window {
             }
             NavigationItem {
                 glyph: Glyph.you;
+                account: root.account-connected;
+                photo: root.account-photo;
+                has-photo: root.account-has-photo;
+                initial: root.account-initial;
                 label: UiText.tr("You");
                 selected: root.tab == Screen.you && !root.auxiliary;
                 pressed => { content-focus.focus(); root.navigate(Screen.you); }

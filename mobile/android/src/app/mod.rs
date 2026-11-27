@@ -689,6 +689,7 @@ fn bind_account(window: &StreamTube, state: &State) {
         ui.set_account_code("".into());
         ui.set_account_busy(false);
         ui.set_account_connected(false);
+        ui.set_account_has_photo(false);
         ui.set_account_name("".into());
         ui.set_account_message("".into());
         if ui.get_screen() == Screen::Following {
@@ -697,7 +698,7 @@ fn bind_account(window: &StreamTube, state: &State) {
     });
 
     let (target, app) = (window.as_weak(), state.clone());
-    window.on_account_result(move |request, status, name, channels| {
+    window.on_account_result(move |request, status, name, photo, channels| {
         let Some(ui) = target.upgrade() else { return };
         if request != app.borrow().account_request {
             return;
@@ -719,6 +720,11 @@ fn bind_account(window: &StreamTube, state: &State) {
             edit_library(&ui, &app, |library| library.connected_account = true);
             ui.set_account_initial(initial(&name).into());
             ui.set_account_name(name);
+            ui.set_account_photo_url(photo.clone());
+            ui.set_account_has_photo(false);
+            if !photo.is_empty() {
+                load_images(&ui, Vec::new(), vec![photo.to_string()], None, false, Extras::default());
+            }
             ui.set_account_connected(true);
             ui.set_account_message("".into());
             if matches!(ui.get_screen(), Screen::Home | Screen::Following) {
@@ -731,6 +737,7 @@ fn bind_account(window: &StreamTube, state: &State) {
             account::tv::forget_token();
             edit_library(&ui, &app, |library| library.connected_account = false);
             ui.set_account_connected(false);
+            ui.set_account_has_photo(false);
             ui.set_account_name("".into());
             if ui.get_screen() == Screen::Following {
                 reload(&ui, &app);
@@ -773,12 +780,12 @@ fn authorize(ui: &StreamTube, state: &State, interactive: bool, choose_account: 
                 None if !interactive => Err(account::tv::Failure::Reconnect),
                 None => sign_in(request, &target),
             };
-            let (status, name, channels) = match outcome {
-                Ok((name, channels)) => (0, name, channels),
-                Err(failure) => (failure as i32, String::new(), "[]".to_owned()),
+            let (status, name, photo, channels) = match outcome {
+                Ok((name, photo, channels)) => (0, name, photo, channels),
+                Err(failure) => (failure as i32, String::new(), String::new(), "[]".to_owned()),
             };
             let _ = target.upgrade_in_event_loop(move |ui| {
-                ui.invoke_account_result(request, status, name.into(), channels.into());
+                ui.invoke_account_result(request, status, name.into(), photo.into(), channels.into());
             });
         });
 }
@@ -790,7 +797,7 @@ static ACCOUNT_REQUEST: AtomicI32 = AtomicI32::new(0);
 fn sign_in(
     request: i32,
     target: &slint::Weak<StreamTube>,
-) -> Result<(String, String), account::tv::Failure> {
+) -> Result<(String, String, String), account::tv::Failure> {
     use account::tv::{Failure, Poll};
     let code = account::tv::start()?;
     let (shown, link) = (code.user_code.clone(), code.activate_url());
@@ -822,12 +829,12 @@ fn sign_in(
     }
 }
 
-/// The account name and its subscriptions as the JSON the interface imports.
-fn read_account(access_token: &str) -> Result<(String, String), account::tv::Failure> {
+/// The account name, its picture URL and its subscriptions as the JSON the interface imports.
+fn read_account(access_token: &str) -> Result<(String, String, String), account::tv::Failure> {
     let channels = account::tv::subscriptions(access_token)?;
-    let name = account::tv::account_name(access_token);
+    let (name, photo) = account::tv::account_profile(access_token);
     let channels = serde_json::to_string(&channels).map_err(|_| account::tv::Failure::Unavailable)?;
-    Ok((name, channels))
+    Ok((name, photo, channels))
 }
 
 fn following_channels(state: &AppState) -> Vec<Channel> {
@@ -1386,6 +1393,10 @@ fn apply_avatar(ui: &StreamTube, url: &str, pixels: SharedPixelBuffer<Rgba8Pixel
             row.has_avatar = true;
             channels.set_row_data(index, row);
         }
+    }
+    if ui.get_account_photo_url() == url {
+        ui.set_account_photo(image.clone());
+        ui.set_account_has_photo(true);
     }
     if ui.get_channel_avatar_url() == url {
         ui.set_channel_avatar(image);
