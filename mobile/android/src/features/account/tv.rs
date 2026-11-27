@@ -4,11 +4,14 @@
 //! account there and allows access. Unlike Google Play services authorization, this
 //! needs no OAuth client registered for the APK's signing key, so self-signed builds
 //! can sign in. The refresh token is kept in the app's private storage.
-use crate::entities::Channel;
-use crate::features::youtube::is_channel_id;
+use crate::entities::{Channel, Video};
+use crate::features::youtube::{is_channel_id, is_video_id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use url::Url;
 
 // Public OAuth client of the YouTube TV app.
@@ -197,6 +200,194 @@ fn tv_call(access_token: &str, endpoint: &str, mut body: Value) -> Result<Value,
     }
 }
 
+/// An access token for the saved account, refreshed when the cached one is old.
+pub fn access_token() -> Result<String, Failure> {
+    const LIFETIME: Duration = Duration::from_secs(45 * 60);
+    if let Ok(cached) = ACCESS.lock() {
+        if let Some((token, at)) = cached.as_ref() {
+            if at.elapsed() < LIFETIME {
+                return Ok(token.clone());
+            }
+        }
+    }
+    let token = refresh(&saved_token().ok_or(Failure::Reconnect)?)?;
+    remember_access(&token);
+    Ok(token)
+}
+
+/// Keeps a token the sign-in or reconnect just got, so the feed does not refresh again.
+pub fn remember_access(token: &str) {
+    if let Ok(mut cached) = ACCESS.lock() {
+        *cached = Some((token.to_owned(), Instant::now()));
+    }
+}
+
+pub fn forget_access() {
+    if let Ok(mut cached) = ACCESS.lock() {
+        *cached = None;
+    }
+}
+
+static ACCESS: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// One page of the account's own YouTube Home, as the YouTube TV app gets it.
+#[derive(Debug, Default)]
+pub struct HomePage {
+    pub videos: Vec<Video>,
+    pub shorts: Vec<Video>,
+    /// Token for the next row of shelves.
+    pub next: Option<String>,
+}
+
+/// The personal Home feed. Each shelf's own "more" page is fetched too, so a
+/// page holds about as many videos as the phone app shows before scrolling on.
+pub fn home(access_token: &str, continuation: Option<&str>) -> Result<HomePage, Failure> {
+    let body = match continuation {
+        Some(token) => json!({ "continuation": token }),
+        None => json!({ "browseId": "FEwhat_to_watch" }),
+    };
+    let reply = tv_call(access_token, "browse", body)?;
+    let (mut page, shelves) = parse_home(&reply);
+    let more: Vec<Vec<Video>> = std::thread::scope(|scope| {
+        let tasks: Vec<_> = shelves
+            .iter()
+            .take(4)
+            .map(|token| {
+                scope.spawn(move || {
+                    tv_call(access_token, "browse", json!({ "continuation": token }))
+                        .map(|reply| parse_home(&reply).0.videos)
+                        .unwrap_or_default()
+                })
+            })
+            .collect();
+        tasks.into_iter().filter_map(|task| task.join().ok()).collect()
+    });
+    for videos in more {
+        page.videos.extend(videos);
+    }
+    let mut seen = std::collections::HashSet::new();
+    page.videos.retain(|video| seen.insert(video.id.clone()));
+    Ok(page)
+}
+
+/// The page and the "more" tokens of its video shelves.
+fn parse_home(reply: &Value) -> (HomePage, Vec<String>) {
+    let mut page = HomePage::default();
+    let mut shelf_tokens = Vec::new();
+    let mut shelves = Vec::new();
+    find_all(reply, "shelfRenderer", &mut shelves);
+    // a shelf's "more" reply has no shelves, only its tiles
+    if shelves.is_empty() {
+        shelves.push(reply);
+    }
+    for shelf in shelves {
+        let mut tiles = Vec::new();
+        find_all(shelf, "tileRenderer", &mut tiles);
+        let mut has_videos = false;
+        for tile in tiles {
+            let Some(video) = tile_video(tile) else { continue };
+            if video.short {
+                page.shorts.push(video);
+            } else {
+                has_videos = true;
+                page.videos.push(video);
+            }
+        }
+        if has_videos {
+            if let Some(token) = shelf
+                .pointer("/content/horizontalListRenderer/continuations/0/nextContinuationData/continuation")
+                .and_then(Value::as_str)
+            {
+                shelf_tokens.push(token.to_owned());
+            }
+        }
+    }
+    page.next = [
+        "/contents/tvBrowseRenderer/content/tvSurfaceContentRenderer/content/sectionListRenderer/continuations/0/nextContinuationData/continuation",
+        "/continuationContents/sectionListContinuation/continuations/0/nextContinuationData/continuation",
+    ]
+    .iter()
+    .find_map(|pointer| reply.pointer(pointer).and_then(Value::as_str))
+    .map(str::to_owned);
+    (page, shelf_tokens)
+}
+
+/// A video or Short tile; ads, mixes and playlists are left out.
+fn tile_video(tile: &Value) -> Option<Video> {
+    let short = match tile.get("contentType").and_then(Value::as_str)? {
+        "TILE_CONTENT_TYPE_VIDEO" => false,
+        "TILE_CONTENT_TYPE_SHORTS" => true,
+        _ => return None,
+    };
+    let select = tile.get("onSelectCommand")?;
+    if select.get("watchEndpoint").is_none() && select.get("reelWatchEndpoint").is_none() {
+        return None;
+    }
+    let id = tile.get("contentId").and_then(Value::as_str).filter(|id| is_video_id(id))?;
+    let metadata = tile.pointer("/metadata/tileMetadataRenderer")?;
+    let title = metadata.get("title").map(text).unwrap_or_default();
+    let lines: Vec<Vec<String>> = metadata
+        .get("lines")
+        .and_then(Value::as_array)
+        .map(|lines| {
+            lines
+                .iter()
+                .map(|line| {
+                    line.pointer("/lineRenderer/items")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| item.pointer("/lineItemRenderer/text"))
+                                .map(|value| text(value).trim().to_owned())
+                                .filter(|part| !part.is_empty() && part != "•")
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let line = |index: usize, part: usize| {
+        lines.get(index).and_then(|line| line.get(part)).cloned().unwrap_or_default()
+    };
+    let duration = tile
+        .pointer("/header/tileHeaderRenderer/thumbnailOverlays")
+        .and_then(Value::as_array)
+        .and_then(|overlays| {
+            overlays.iter().find_map(|overlay| {
+                overlay
+                    .pointer("/thumbnailOverlayTimeStatusRenderer/text")
+                    .map(text)
+                    .filter(|time| !time.is_empty())
+            })
+        })
+        .unwrap_or_default();
+    // only Shorts carry the channel, in their long-press menu
+    let mut links = Vec::new();
+    find_all(tile, "browseId", &mut links);
+    let channel_id = links
+        .into_iter()
+        .filter_map(Value::as_str)
+        .find(|id| is_channel_id(id))
+        .unwrap_or_default()
+        .to_owned();
+    Some(Video {
+        id: id.to_owned(),
+        title,
+        channel: Channel {
+            id: channel_id,
+            name: lines.first().map(|parts| parts.join(", ")).unwrap_or_default(),
+            avatar: String::new(),
+        },
+        duration,
+        views: line(1, 0),
+        published: line(1, 1),
+        short,
+        avatar: String::new(),
+    })
+}
+
 /// The signed-in account's display name.
 pub fn account_name(access_token: &str) -> String {
     account_profile(access_token).0
@@ -328,6 +519,75 @@ fn rand_nibble() -> u8 {
 }
 
 #[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    fn tile(kind: &str, id: &str, select: &str) -> Value {
+        json!({ "tileRenderer": {
+            "contentType": kind,
+            "contentId": id,
+            "onSelectCommand": { select: { "videoId": id } },
+            "header": { "tileHeaderRenderer": { "thumbnailOverlays": [
+                { "thumbnailOverlayTimeStatusRenderer": { "text": { "simpleText": "8:56" } } }
+            ] } },
+            "metadata": { "tileMetadataRenderer": {
+                "title": { "simpleText": "The Return of The King" },
+                "lines": [
+                    { "lineRenderer": { "items": [ { "lineItemRenderer": { "text": { "runs": [ { "text": "Rekkles" } ] } } } ] } },
+                    { "lineRenderer": { "items": [
+                        { "lineItemRenderer": { "text": { "simpleText": "" } } },
+                        { "lineItemRenderer": { "text": { "simpleText": "250K views" } } },
+                        { "lineItemRenderer": { "text": { "simpleText": "•" } } },
+                        { "lineItemRenderer": { "text": { "simpleText": "7 hours ago" } } }
+                    ] } }
+                ]
+            } },
+            "onLongPressCommand": { "menu": { "browseEndpoint": { "browseId": "UC4gz07oIFoFXSQ4gp87XdIA" } } }
+        } })
+    }
+
+    #[test]
+    fn reads_personal_home_shelves_without_ads() {
+        let reply = json!({
+            "contents": { "tvBrowseRenderer": { "content": { "tvSurfaceContentRenderer": { "content": {
+                "sectionListRenderer": {
+                    "contents": [
+                        { "shelfRenderer": { "content": { "horizontalListRenderer": {
+                            "items": [
+                                { "tileRenderer": { "contentId": "dJSDOjLsrEnUufYo", "onSelectCommand": { "commandExecutorCommand": {} } } },
+                                tile("TILE_CONTENT_TYPE_VIDEO", "FU3LrO8i2dM", "watchEndpoint"),
+                                tile("TILE_CONTENT_TYPE_PLAYLIST", "RDYphV1BeMDFg", "watchEndpoint")
+                            ],
+                            "continuations": [ { "nextContinuationData": { "continuation": "shelf-more" } } ]
+                        } } } },
+                        { "shelfRenderer": { "content": { "horizontalListRenderer": {
+                            "items": [ tile("TILE_CONTENT_TYPE_SHORTS", "4UhjxJPpdGU", "reelWatchEndpoint") ],
+                            "continuations": [ { "nextContinuationData": { "continuation": "shorts-more" } } ]
+                        } } } }
+                    ],
+                    "continuations": [ { "nextContinuationData": { "continuation": "next-shelves" } } ]
+                }
+            } } } } }
+        });
+        let (page, shelves) = parse_home(&reply);
+        assert_eq!(page.videos.len(), 1);
+        let video = &page.videos[0];
+        assert_eq!(video.id, "FU3LrO8i2dM");
+        assert_eq!(video.title, "The Return of The King");
+        assert_eq!(video.channel.name, "Rekkles");
+        assert_eq!(video.views, "250K views");
+        assert_eq!(video.published, "7 hours ago");
+        assert_eq!(video.duration, "8:56");
+        assert_eq!(page.shorts.len(), 1);
+        assert!(page.shorts[0].short);
+        assert_eq!(page.shorts[0].channel.id, "UC4gz07oIFoFXSQ4gp87XdIA");
+        // only the video shelf's "more" page is worth fetching
+        assert_eq!(shelves, vec!["shelf-more".to_owned()]);
+        assert_eq!(page.next.as_deref(), Some("next-shelves"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -398,3 +658,4 @@ mod tests {
         println!("subscriptions: {}", subscriptions(&access).expect("subscriptions").len());
     }
 }
+

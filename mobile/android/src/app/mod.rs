@@ -51,6 +51,9 @@ struct Playback {
 enum Feed {
     Home(Category),
     ForYou(Interests),
+    /// The signed-in account's own YouTube Home; the interests are the fallback
+    /// and the channels lend their pictures to its videos.
+    Account(Interests, Arc<Vec<Channel>>),
     Shorts,
     Following(Vec<Channel>),
     Channel(Channel),
@@ -64,6 +67,7 @@ enum Feed {
 enum FeedCursor {
     YouTube(Cursor),
     Following(Vec<Channel>),
+    Account(String, Arc<Vec<Channel>>),
 }
 
 struct FeedPage {
@@ -703,6 +707,7 @@ fn bind_account(window: &StreamTube, state: &State) {
             state.account_channels.clear();
         }
         account::tv::forget_token();
+        account::tv::forget_access();
         edit_library(&ui, &app, |library| library.connected_account = false);
         ui.set_account_code("".into());
         ui.set_account_busy(false);
@@ -753,6 +758,7 @@ fn bind_account(window: &StreamTube, state: &State) {
         if status == 5 {
             app.borrow_mut().account_channels.clear();
             account::tv::forget_token();
+            account::tv::forget_access();
             edit_library(&ui, &app, |library| library.connected_account = false);
             ui.set_account_connected(false);
             ui.set_account_has_photo(false);
@@ -849,6 +855,7 @@ fn sign_in(
 
 /// The account name, its picture URL and its subscriptions as the JSON the interface imports.
 fn read_account(access_token: &str) -> Result<(String, String, String), account::tv::Failure> {
+    account::tv::remember_access(access_token);
     let channels = account::tv::subscriptions(access_token)?;
     let (name, photo) = account::tv::account_profile(access_token);
     let channels = serde_json::to_string(&channels).map_err(|_| account::tv::Failure::Unavailable)?;
@@ -875,13 +882,17 @@ fn reload(ui: &StreamTube, state: &State) {
         *state.next_page.lock().expect("feed cursor is available") = None;
         let feed = match screen {
             Screen::Home if ui.get_category() == 0 => {
+                let channels = following_channels(&state);
                 let interests = Interests::new(
                     &state.library.history,
                     &state.library.recent_searches,
-                    following_channels(&state),
+                    channels.clone(),
                 );
-                ui.set_personal_home(interests.available());
-                Some(if interests.available() {
+                let account = state.library.connected_account && account::tv::saved_token().is_some();
+                ui.set_personal_home(account || interests.available());
+                Some(if account {
+                    Feed::Account(interests, Arc::new(channels))
+                } else if interests.available() {
                     Feed::ForYou(interests)
                 } else {
                     Feed::Home(Category::All)
@@ -1059,8 +1070,9 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
     let client = Client::new(language);
     let append = matches!(feed, Feed::Next(_));
     let shorts = matches!(feed, Feed::Shorts);
+    let account_feed = matches!(feed, Feed::Account(..) | Feed::Next(FeedCursor::Account(..)));
     // the first page of the main Home feed gets a Shorts shelf, fetched alongside it
-    let shelf = if matches!(feed, Feed::ForYou(_) | Feed::Home(Category::All)) {
+    let shelf = if matches!(feed, Feed::ForYou(_) | Feed::Account(..) | Feed::Home(Category::All)) {
         std::thread::Builder::new()
             .name("stream-tube-shorts-shelf".into())
             .spawn(move || Client::new(language).shorts())
@@ -1068,9 +1080,19 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
     } else {
         None
     };
+    // Shorts that came with the account's Home; they fill the shelf instead of a search
+    let mut account_shorts = Vec::new();
     let page = match feed {
         Feed::Home(category) => client.home(category).map(FeedPage::from),
         Feed::ForYou(interests) => interests.load(language).map(FeedPage::from),
+        Feed::Account(interests, channels) => match account_home(None, &channels) {
+            Some((page, shorts)) => {
+                account_shorts = shorts;
+                Some(page)
+            }
+            None if interests.available() => interests.load(language).map(FeedPage::from),
+            None => client.home(Category::All).map(FeedPage::from),
+        },
         Feed::Shorts => client.shorts().map(FeedPage::from),
         Feed::Following(channels) => follow_feed(language, &channels, &request, generation),
         Feed::Channel(channel) => client.channel(&channel).map(FeedPage::from),
@@ -1080,6 +1102,9 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
         Feed::Next(FeedCursor::YouTube(cursor)) => client.next_page(cursor).map(FeedPage::from),
         Feed::Next(FeedCursor::Following(channels)) => {
             follow_feed(language, &channels, &request, generation)
+        }
+        Feed::Next(FeedCursor::Account(token, channels)) => {
+            account_home(Some(&token), &channels).map(|(page, _)| page)
         }
     };
     let mut ids = page
@@ -1092,6 +1117,17 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
         .flat_map(|page| &page.videos)
         .map(|video| video.avatar.clone())
         .collect::<Vec<_>>();
+    // videos of the account's Home from channels it does not follow, one per channel
+    let mut faceless = Vec::new();
+    if account_feed {
+        let mut names = HashSet::new();
+        for video in page.iter().flat_map(|page| &page.videos) {
+            let name = video.channel.name.trim();
+            if video.avatar.is_empty() && !name.is_empty() && names.insert(name.to_owned()) {
+                faceless.push((name.to_owned(), video.id.clone()));
+            }
+        }
+    }
     let check = request.clone();
     let shelf_saved = saved.clone();
     if target
@@ -1143,12 +1179,12 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
     }
 
     if let Some(shelf) = shelf {
-        let videos = shelf
-            .join()
-            .ok()
-            .flatten()
-            .map(|page| page.videos)
-            .unwrap_or_default()
+        let videos = if account_shorts.len() >= 3 {
+            account_shorts
+        } else {
+            shelf.join().ok().flatten().map(|page| page.videos).unwrap_or_default()
+        };
+        let videos = videos
             .into_iter()
             .filter(|video| !is_hidden(&video.id))
             .take(12)
@@ -1189,6 +1225,9 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
         }
     }
 
+    if thumbnails && !faceless.is_empty() {
+        find_owners(target.clone(), faceless, (request.clone(), generation), language, extras);
+    }
     if !thumbnails && !extras.dearrow_titles {
         return;
     }
@@ -1196,6 +1235,130 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
         avatars.clear();
     }
     fetch_images(target, ids, avatars, Some((request, generation)), thumbnails, extras);
+}
+
+/// Channels of the account's Home, by name, found from one of their videos.
+static OWNERS: LazyLock<Mutex<HashMap<String, youtube::watch::Owner>>> = LazyLock::new(Mutex::default);
+
+/// The TV reply names a video's channel but gives no picture or id. For channels the
+/// account does not follow, both are read from one video's watch page, a few at a
+/// time, after the feed is on screen; each channel is looked up once per session.
+fn find_owners(
+    target: slint::Weak<StreamTube>,
+    faceless: Vec<(String, String)>,
+    check: (Arc<AtomicU64>, u64),
+    language: Language,
+    extras: Extras,
+) {
+    let _ = std::thread::Builder::new()
+        .name("stream-tube-owners".into())
+        .spawn(move || {
+            let current = |check: &(Arc<AtomicU64>, u64)| check.0.load(Ordering::Relaxed) == check.1;
+            let mut known = Vec::new();
+            let mut lookups = Vec::new();
+            for (name, id) in faceless.into_iter().take(24) {
+                match OWNERS.lock().ok().and_then(|owners| owners.get(&name).cloned()) {
+                    Some(owner) => known.push((name, owner)),
+                    None => lookups.push((name, id)),
+                }
+            }
+            show_owners(&target, known, &check, extras);
+            for batch in lookups.chunks(4) {
+                if !current(&check) {
+                    return;
+                }
+                let found: Vec<(String, youtube::watch::Owner)> = std::thread::scope(|scope| {
+                    let tasks: Vec<_> = batch
+                        .iter()
+                        .map(|(name, id)| {
+                            scope.spawn(move || {
+                                youtube::watch::details(id, language)
+                                    .map(|details| details.channel)
+                                    .filter(|owner| !owner.avatar.is_empty())
+                                    .map(|owner| (name.clone(), owner))
+                            })
+                        })
+                        .collect();
+                    tasks.into_iter().filter_map(|task| task.join().ok().flatten()).collect()
+                });
+                if let Ok(mut owners) = OWNERS.lock() {
+                    for (name, owner) in &found {
+                        owners.insert(name.clone(), owner.clone());
+                    }
+                }
+                show_owners(&target, found, &check, extras);
+            }
+        });
+}
+
+/// Gives feed rows of these channels their id and picture, then loads the pictures.
+fn show_owners(
+    target: &slint::Weak<StreamTube>,
+    owners: Vec<(String, youtube::watch::Owner)>,
+    check: &(Arc<AtomicU64>, u64),
+    extras: Extras,
+) {
+    if owners.is_empty() {
+        return;
+    }
+    let check = check.clone();
+    let _ = target.upgrade_in_event_loop(move |ui| {
+        if check.0.load(Ordering::Relaxed) != check.1 {
+            return;
+        }
+        let model = ui.get_videos();
+        let mut avatars = Vec::new();
+        for index in 0..model.row_count() {
+            let Some(mut row) = model.row_data(index) else { continue };
+            if !row.avatar_url.is_empty() {
+                continue;
+            }
+            let Some((_, owner)) = owners.iter().find(|(name, _)| row.channel.as_str().trim() == name) else {
+                continue;
+            };
+            if row.channel_id.is_empty() {
+                row.channel_id = owner.id.clone().into();
+            }
+            row.avatar_url = owner.avatar.clone().into();
+            avatars.push(owner.avatar.clone());
+            model.set_row_data(index, row);
+        }
+        if !avatars.is_empty() {
+            load_images(&ui, Vec::new(), avatars, Some(check), true, extras);
+        }
+    });
+}
+
+/// A page of the account's own Home and its Shorts, or None to fall back to the
+/// anonymous feeds. The TV reply names channels without pictures, so videos from
+/// channels the account follows get those channels' ids and pictures.
+fn account_home(continuation: Option<&str>, channels: &Arc<Vec<Channel>>) -> Option<(FeedPage, Vec<Video>)> {
+    let token = account::tv::access_token().ok()?;
+    let page = account::tv::home(&token, continuation).ok()?;
+    if continuation.is_none() && page.videos.is_empty() {
+        return None;
+    }
+    let by_name: HashMap<String, &Channel> = channels
+        .iter()
+        .map(|channel| (channel.name.trim().to_lowercase(), channel))
+        .collect();
+    let by_id: HashMap<&str, &Channel> = channels.iter().map(|channel| (channel.id.as_str(), channel)).collect();
+    let enrich = |mut video: Video| {
+        let known = by_id
+            .get(video.channel.id.as_str())
+            .or_else(|| by_name.get(&video.channel.name.trim().to_lowercase()))
+            .copied();
+        if let Some(channel) = known {
+            video.channel.id = channel.id.clone();
+            video.avatar = channel.avatar.clone();
+            video.channel.avatar = channel.avatar.clone();
+        }
+        video
+    };
+    let videos = page.videos.into_iter().map(enrich).collect();
+    let shorts = page.shorts.into_iter().map(enrich).collect();
+    let next = page.next.map(|token| FeedCursor::Account(token, channels.clone()));
+    Some((FeedPage { videos, next }, shorts))
 }
 
 /// Placeholder row the feed shows as the Shorts shelf.

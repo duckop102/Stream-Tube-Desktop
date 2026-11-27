@@ -58,7 +58,7 @@ export struct VideoRow {
     has-avatar: bool,
 }
 
-enum Glyph { none, home, shorts, following, you, settings, back, search, more, clock, fill, close, bookmark, block, channel, refresh, gear }
+enum Glyph { none, home, shorts, following, you, settings, back, search, more, clock, fill, close, bookmark, block, channel, refresh, gear, comment, dots, play }
 
 component Symbol inherits Path {
     in property <Glyph> glyph;
@@ -85,7 +85,10 @@ component Symbol inherits Path {
         : root.glyph == Glyph.block ? "M 12 3.5 A 8.5 8.5 0 1 1 11.99 3.5 Z M 6 6 L 18 18"
         : root.glyph == Glyph.channel ? "M 3.5 5 L 20.5 5 L 20.5 19 L 3.5 19 Z M 12 8 A 2.4 2.4 0 1 1 11.99 8 Z M 7.5 16.5 C 8 14.2 9.8 13.3 12 13.3 C 14.2 13.3 16 14.2 16.5 16.5"
         : root.glyph == Glyph.gear ? "M 12 8.6 A 3.4 3.4 0 1 1 11.99 8.6 Z M 10.6 2.8 L 13.4 2.8 L 13.9 5.3 L 15.6 6.3 L 18 5.4 L 19.4 7.8 L 17.5 9.5 L 17.5 14.5 L 19.4 16.2 L 18 18.6 L 15.6 17.7 L 13.9 18.7 L 13.4 21.2 L 10.6 21.2 L 10.1 18.7 L 8.4 17.7 L 6 18.6 L 4.6 16.2 L 6.5 14.5 L 6.5 9.5 L 4.6 7.8 L 6 5.4 L 8.4 6.3 L 10.1 5.3 Z"
-        : root.glyph == Glyph.refresh ? "M 19 12 A 7 7 0 1 1 16.6 6.7 M 19 4 L 19 8.5 L 14.5 8.5" : "";
+        : root.glyph == Glyph.refresh ? "M 19 12 A 7 7 0 1 1 16.6 6.7 M 19 4 L 19 8.5 L 14.5 8.5"
+        : root.glyph == Glyph.comment ? "M 4 4.8 L 20 4.8 L 20 16.2 L 10 16.2 L 6 19.8 L 6 16.2 L 4 16.2 Z M 8 9 L 16 9 M 8 12.2 L 13.5 12.2"
+        : root.glyph == Glyph.dots ? "M 5 10.4 A 1.6 1.6 0 1 1 4.99 10.4 Z M 12 10.4 A 1.6 1.6 0 1 1 11.99 10.4 Z M 19 10.4 A 1.6 1.6 0 1 1 18.99 10.4 Z"
+        : root.glyph == Glyph.play ? "M 7.5 4.8 L 18.5 12 L 7.5 19.2 Z" : "";
 }
 
 // A round icon button with a soft press highlight.
@@ -95,6 +98,7 @@ component IconButton inherits Rectangle {
     in property <color> tint: Theme.text;
     in property <bool> filled;
     in property <length> icon-size: 24px;
+    in property <length> stroke-width: 1.8px;
     callback pressed;
     width: 40px;
     height: 40px;
@@ -109,6 +113,7 @@ component IconButton inherits Rectangle {
         glyph: root.glyph;
         tint: root.tint;
         filled: root.filled;
+        stroke-width: root.stroke-width;
     }
     touch := TouchArea { clicked => { root.pressed(); } }
 }
@@ -172,6 +177,46 @@ component Chip inherits Rectangle {
     touch := TouchArea { clicked => { root.pressed(); } }
 }
 
+// A text tab of the Home screen; the selected one sits in a dark pill.
+component Tab inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback pressed;
+    height: 36px;
+    border-radius: self.height / 2;
+    background: root.selected ? #ffffff1f : (touch.pressed ? #ffffff12 : #ffffff00);
+    border-width: root.selected ? 1px : 0px;
+    border-color: #ffffff10;
+    animate background { duration: 160ms; easing: ease-out; }
+    accessible-role: tab;
+    accessible-label: root.label;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: 16px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea { clicked => { root.pressed(); } }
+}
+
+// Hides the corner of a picture outside a quarter circle, for pictures that
+// round only some corners.
+component Corner inherits Path {
+    // false: bottom left, true: bottom right
+    in property <bool> right;
+    width: 18px;
+    height: 18px;
+    viewbox-width: 18;
+    viewbox-height: 18;
+    fill: Theme.background;
+    commands: root.right ? "M 18 0 L 18 18 L 0 18 A 18 18 0 0 0 18 0 Z" : "M 0 0 L 0 18 L 18 18 A 18 18 0 0 1 0 0 Z";
+}
+
 // Circle with the channel picture, or its initial while the picture loads.
 component Avatar inherits Rectangle {
     in property <image> source;
@@ -201,35 +246,36 @@ component Avatar inherits Rectangle {
     }
 }
 
-// Stream Tube's own mark: the gradient tile with a play sign, and the wordmark.
+// Stream Tube's own mark: a red play tile and the wordmark.
 component Logo inherits HorizontalLayout {
-    spacing: 6px;
+    spacing: 5px;
     alignment: start;
     Rectangle {
-        width: 30px;
-        height: 22px;
+        width: 29px;
+        height: 20px;
         y: (parent.height - self.height) / 2;
-        border-radius: 7px;
+        border-radius: 5px;
         background: #ff0033;
         Path {
-            width: 18px;
-            height: 12px;
-            viewbox-width: 18;
-            viewbox-height: 12;
+            width: 9px;
+            height: 10px;
+            viewbox-width: 9;
+            viewbox-height: 10;
             fill: #ffffff;
-            commands: "M 0.5 2.2 L 5.5 2.2 L 5.5 3.8 L 0.5 3.8 Z M 0.5 5.2 L 5.5 5.2 L 5.5 6.8 L 0.5 6.8 Z M 0.5 8.2 L 5.5 8.2 L 5.5 9.8 L 0.5 9.8 Z M 8 0.8 L 17.5 6 L 8 11.2 Z";
+            commands: "M 0 0 L 9 5 L 0 10 Z";
         }
     }
     Text {
         text: "StreamTube";
         color: Theme.text;
-        font-size: 19px;
-        font-weight: 800;
-        letter-spacing: -0.6px;
+        font-size: 20px;
+        font-weight: 700;
+        letter-spacing: -1px;
         vertical-alignment: center;
     }
 }
 
+// A bottom-bar tab: an icon only, as on the YouTube phone app.
 component NavigationItem inherits Rectangle {
     in property <Glyph> glyph;
     in property <string> label;
@@ -242,52 +288,35 @@ component NavigationItem inherits Rectangle {
     callback pressed;
 
     horizontal-stretch: 1;
-    height: 50px;
-    accessible-role: button;
+    accessible-role: tab;
     accessible-label: label;
     Rectangle {
-        width: 44px;
-        height: 44px;
-        y: 0px;
-        border-radius: 22px;
+        width: 48px;
+        height: 48px;
+        border-radius: 24px;
         background: touch.pressed ? #ffffff1f : #ffffff00;
         animate background { duration: 160ms; easing: ease-out; }
     }
-    VerticalLayout {
-        alignment: center;
-        spacing: 2px;
-        padding-top: 4px;
-        Rectangle {
-            height: 26px;
-            if !root.account: Symbol {
-                width: 26px;
-                height: 26px;
-                glyph: root.glyph;
-                tint: Theme.text;
-                filled: root.selected;
-                stroke-width: 1.6px;
-            }
-            if root.account: Rectangle {
-                width: 26px;
-                height: 26px;
-                border-radius: 13px;
-                border-width: root.selected ? 1.5px : 0px;
-                border-color: Theme.text;
-                Avatar {
-                    width: root.selected ? 21px : 24px;
-                    source: root.photo;
-                    has-image: root.has-photo;
-                    initial: root.initial;
-                    background: #00897b;
-                }
-            }
-        }
-        Text {
-            text: root.label;
-            font-size: 10px;
-            color: Theme.text;
-            horizontal-alignment: center;
-            overflow: elide;
+    if !root.account: Symbol {
+        width: 27px;
+        height: 27px;
+        glyph: root.glyph;
+        tint: Theme.text;
+        filled: root.selected;
+        stroke-width: 1.7px;
+    }
+    if root.account: Rectangle {
+        width: 28px;
+        height: 28px;
+        border-radius: 14px;
+        border-width: root.selected ? 1.5px : 0px;
+        border-color: Theme.text;
+        Avatar {
+            width: root.selected ? 23px : 27px;
+            source: root.photo;
+            has-image: root.has-photo;
+            initial: root.initial;
+            background: #00897b;
         }
     }
     touch := TouchArea { clicked => { root.pressed(); } }
@@ -332,15 +361,17 @@ component LanguageItem inherits Rectangle {
     touch := TouchArea { clicked => { root.pressed(); } }
 }
 
-// A video in a feed, laid out like the YouTube phone app.
+// A video in a feed as the YouTube phone app shows it: the picture edge to edge,
+// then a dark panel with the title, the channel and the actions.
 component VideoCard inherits Rectangle {
     in property <VideoRow> video;
-    in property <length> radius;
+    in property <length> radius: 18px;
     callback watch;
     callback menu;
+    callback save;
     callback open-channel;
     property <length> frame-height: self.width * 9 / 16;
-    height: frame-height + 12px + max(info.preferred-height, 40px) + 14px;
+    height: frame-height + panel.height;
     opacity: 0;
     init => { self.opacity = 1; }
     animate opacity { duration: 220ms; easing: ease-out; }
@@ -348,8 +379,6 @@ component VideoCard inherits Rectangle {
     preview := Rectangle {
         y: 0;
         height: root.frame-height;
-        border-radius: root.radius;
-        clip: true;
         background: Theme.surface;
         accessible-role: button;
         accessible-label: root.video.title;
@@ -364,17 +393,17 @@ component VideoCard inherits Rectangle {
             animate opacity { duration: 260ms; easing: ease-out; }
         }
         if root.video.duration != "": Rectangle {
-            x: parent.width - self.width - 8px;
-            y: parent.height - self.height - 8px;
-            width: badge.preferred-width + 8px;
-            height: 20px;
-            border-radius: 4px;
-            background: root.video.duration == "LIVE" ? #cc0000 : #000000cc;
+            x: parent.width - self.width - 12px;
+            y: parent.height - self.height - 12px;
+            width: badge.preferred-width + 14px;
+            height: 22px;
+            border-radius: 11px;
+            background: root.video.duration == "LIVE" ? #cc0000 : #000000a6;
             badge := Text {
                 text: root.video.duration;
                 color: #ffffff;
-                font-size: 12px;
-                font-weight: 600;
+                font-size: 13px;
+                font-weight: 500;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -386,73 +415,116 @@ component VideoCard inherits Rectangle {
         preview-touch := TouchArea { clicked => { root.watch(); } }
     }
 
-    info := HorizontalLayout {
-        y: root.frame-height + 12px;
-        height: self.preferred-height;
-        padding-left: 12px;
-        padding-right: 2px;
-        spacing: 12px;
-        alignment: stretch;
-        Rectangle {
-            width: 36px;
-            Avatar {
-                y: 0;
-                source: root.video.avatar;
-                has-image: root.video.has-avatar;
-                initial: root.video.initial;
+    panel := Rectangle {
+        y: root.frame-height;
+        height: body.preferred-height;
+        background: panel-touch.pressed ? #2a2a2a : Theme.raised;
+        border-bottom-left-radius: root.radius;
+        border-bottom-right-radius: root.radius;
+        animate background { duration: 120ms; easing: ease-out; }
+        panel-touch := TouchArea { clicked => { root.watch(); } }
+        body := VerticalLayout {
+            padding-left: 16px;
+            padding-right: 8px;
+            padding-top: 14px;
+            padding-bottom: 14px;
+            spacing: 12px;
+            HorizontalLayout {
+                padding-right: 8px;
+                Text {
+                    text: root.video.title;
+                    // two lines at most, as on YouTube
+                    height: min(self.preferred-height, 46px);
+                    horizontal-alignment: left;
+                    vertical-alignment: top;
+                    color: Theme.text;
+                    font-size: 17px;
+                    font-weight: 500;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
             }
-            TouchArea {
-                height: 36px;
-                y: 0;
-                enabled: root.video.channel-id != "";
-                clicked => { root.open-channel(); }
+            HorizontalLayout {
+                spacing: 12px;
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    y: (parent.height - self.height) / 2;
+                    Avatar {
+                        source: root.video.avatar;
+                        has-image: root.video.has-avatar;
+                        initial: root.video.initial;
+                    }
+                    TouchArea {
+                        enabled: root.video.channel-id != "";
+                        clicked => { root.open-channel(); }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: root.video.channel;
+                        color: Theme.secondary;
+                        font-size: 14px;
+                        overflow: elide;
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        if root.video.views != "": Symbol {
+                            width: 13px;
+                            height: 13px;
+                            y: (parent.height - self.height) / 2;
+                            glyph: Glyph.play;
+                            tint: Theme.secondary;
+                            stroke-width: 1.6px;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.video.views
+                                + (root.video.views != "" && root.video.published != "" ? "   " : "") + root.video.published;
+                            color: Theme.secondary;
+                            font-size: 14px;
+                            overflow: elide;
+                        }
+                    }
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    glyph: Glyph.comment;
+                    stroke-width: 1.6px;
+                    description: UiText.tr("Comments");
+                    pressed => { root.watch(); }
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    glyph: Glyph.bookmark;
+                    filled: root.video.saved;
+                    stroke-width: 1.6px;
+                    description: root.video.saved ? UiText.tr("Remove from Watch later") : UiText.tr("Save to Watch later");
+                    pressed => { root.save(); }
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    glyph: Glyph.dots;
+                    filled: true;
+                    description: UiText.tr("More actions");
+                    pressed => { root.menu(); }
+                }
             }
-        }
-        VerticalLayout {
-            horizontal-stretch: 1;
-            alignment: start;
-            spacing: 4px;
-            title := Text {
-                text: root.video.title;
-                // two lines at most, as on YouTube
-                height: min(self.preferred-height, 40px);
-                horizontal-alignment: left;
-                vertical-alignment: top;
-                color: Theme.text;
-                font-size: 15px;
-                font-weight: 500;
-                wrap: word-wrap;
-                overflow: elide;
-                TouchArea { clicked => { root.watch(); } }
-            }
-            Text {
-                text: root.video.channel
-                    + (root.video.channel != "" && root.video.views != "" ? "  ·  " : "") + root.video.views
-                    + (root.video.published != "" ? "  ·  " + root.video.published : "");
-                color: Theme.secondary;
-                font-size: 12px;
-                overflow: elide;
-            }
-        }
-        IconButton {
-            y: -8px;
-            glyph: Glyph.more;
-            filled: true;
-            icon-size: 20px;
-            description: UiText.tr("More actions");
-            pressed => { root.menu(); }
         }
     }
 }
 
 component ShortCard inherits Rectangle {
     in property <VideoRow> video;
+    // the picture's outer bottom corner is rounded: 0 none, 1 left, 2 right
+    in property <int> corner;
     callback watch;
-    width: 156px;
-    height: self.width * 16 / 9;
-    border-radius: 12px;
-    clip: true;
     background: Theme.surface;
+    accessible-role: button;
+    accessible-label: root.video.title;
     if root.video.has-thumbnail: Image {
         width: parent.width;
         height: parent.height;
@@ -464,100 +536,71 @@ component ShortCard inherits Rectangle {
     }
     Rectangle {
         y: parent.height - self.height;
-        height: 110px;
-        background: @linear-gradient(180deg, #00000000 0%, #000000c0 100%);
+        height: 96px;
+        background: @linear-gradient(180deg, #00000000 0%, #000000b3 100%);
     }
-    VerticalLayout {
-        padding: 10px;
-        alignment: end;
-        spacing: 3px;
-        Text {
-            text: root.video.title;
-            color: #ffffff;
-            font-size: 14px;
-            font-weight: 600;
-            wrap: word-wrap;
-            overflow: elide;
-            max-height: 40px;
-        }
-        Text {
-            text: root.video.views;
-            color: #ffffffd0;
-            font-size: 12px;
-            overflow: elide;
-        }
+    Text {
+        x: 12px;
+        y: parent.height - self.height - 12px;
+        width: parent.width - 24px;
+        height: min(self.preferred-height, 42px);
+        text: root.video.title;
+        color: #ffffff;
+        font-size: 15px;
+        font-weight: 500;
+        wrap: word-wrap;
+        overflow: elide;
+        vertical-alignment: bottom;
     }
     Rectangle {
         background: touch.pressed ? #00000059 : #00000000;
         animate background { duration: 120ms; easing: ease-out; }
     }
+    if root.corner == 1: Corner { x: 0; y: parent.height - self.height; }
+    if root.corner == 2: Corner { x: parent.width - self.width; y: parent.height - self.height; right: true; }
     touch := TouchArea { clicked => { root.watch(); } }
 }
 
-// About two Shorts per screen with the next one peeking, as on YouTube.
+// The Shorts card of Home: a title row and four Shorts in a 2 x 2 grid.
 global ShortsMetrics {
-    public pure function card-width(shelf: length) -> length {
-        return min(220px, (shelf - 32px) / 2 * 0.94);
+    public pure function tile-height(shelf: length) -> length {
+        return (shelf - 4px) / 2 * 16 / 9;
     }
     public pure function shelf-height(shelf: length) -> length {
-        return self.card-width(shelf) * 16 / 9 + 52px;
+        return 60px + self.tile-height(shelf) * 2 + 4px;
     }
 }
 
 component ShortsShelf inherits Rectangle {
     in property <[VideoRow]> shorts;
     callback watch(string);
-    property <length> card-width: ShortsMetrics.card-width(self.width);
+    property <length> tile-width: (self.width - 4px) / 2;
+    property <length> tile-height: ShortsMetrics.tile-height(self.width);
     height: ShortsMetrics.shelf-height(self.width);
-    VerticalLayout {
-        padding-top: 4px;
-        spacing: 12px;
-        HorizontalLayout {
-            padding-left: 12px;
-            spacing: 8px;
-            height: 26px;
-            // the red Shorts mark with its white play sign
-            Rectangle {
-                width: 24px;
-                height: 24px;
-                Symbol {
-                    width: 24px;
-                    height: 24px;
-                    glyph: Glyph.shorts;
-                    tint: #ff0033;
-                    filled: true;
-                }
-                Path {
-                    width: 24px;
-                    height: 24px;
-                    viewbox-width: 24;
-                    viewbox-height: 24;
-                    fill: #ffffff;
-                    commands: "M 10.3 8.8 L 14.8 12 L 10.3 15.2 Z";
-                }
-            }
-            Text {
-                text: UiText.tr("Shorts");
-                color: Theme.text;
-                font-size: 18px;
-                font-weight: 700;
-                vertical-alignment: center;
-            }
+    Rectangle {
+        y: 0;
+        height: 60px;
+        background: Theme.raised;
+        border-top-left-radius: 18px;
+        border-top-right-radius: 18px;
+        Text {
+            x: 16px;
+            text: UiText.tr("Shorts");
+            color: Theme.text;
+            font-size: 24px;
+            font-weight: 700;
+            vertical-alignment: center;
         }
-        Flickable {
-            height: root.card-width * 16 / 9;
-            viewport-width: row.preferred-width;
-            row := HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 8px;
-                for short in root.shorts: ShortCard {
-                    width: root.card-width;
-                    video: short;
-                    watch => { root.watch(short.id); }
-                }
-            }
-        }
+    }
+    for short[index] in root.shorts: ShortCard {
+        visible: index < 4;
+        x: Math.mod(index, 2) * (root.tile-width + 4px);
+        y: 60px + Math.floor(index / 2) * (root.tile-height + 4px);
+        width: root.tile-width;
+        height: root.tile-height;
+        corner: index == 2 ? 1 : index == 3 ? 2 : 0;
+        video: short;
+        watch => { root.watch(short.id); }
     }
 }
 
@@ -565,7 +608,7 @@ component ShortsShelf inherits Rectangle {
 component SkeletonCard inherits Rectangle {
     property <float> glow: 0.55 + 0.25 * Math.sin(animation-tick() / 1ms * 0.0045 * 1rad);
     property <length> frame-height: self.width * 9 / 16;
-    height: frame-height + 96px;
+    height: frame-height + 116px;
     Rectangle {
         y: 0;
         height: root.frame-height;
@@ -573,8 +616,24 @@ component SkeletonCard inherits Rectangle {
         opacity: root.glow;
     }
     Rectangle {
-        x: 12px;
-        y: root.frame-height + 12px;
+        y: root.frame-height;
+        height: 116px;
+        background: Theme.raised;
+        border-bottom-left-radius: 18px;
+        border-bottom-right-radius: 18px;
+    }
+    Rectangle {
+        x: 16px;
+        y: root.frame-height + 16px;
+        width: root.width - 64px;
+        height: 16px;
+        border-radius: 4px;
+        background: Theme.surface;
+        opacity: root.glow;
+    }
+    Rectangle {
+        x: 16px;
+        y: root.frame-height + 64px;
         width: 36px;
         height: 36px;
         border-radius: 18px;
@@ -582,18 +641,9 @@ component SkeletonCard inherits Rectangle {
         opacity: root.glow;
     }
     Rectangle {
-        x: 60px;
-        y: root.frame-height + 14px;
-        width: root.width - 100px;
-        height: 14px;
-        border-radius: 4px;
-        background: Theme.surface;
-        opacity: root.glow;
-    }
-    Rectangle {
-        x: 60px;
-        y: root.frame-height + 38px;
-        width: (root.width - 100px) * 0.6;
+        x: 64px;
+        y: root.frame-height + 68px;
+        width: (root.width - 100px) * 0.45;
         height: 12px;
         border-radius: 4px;
         background: Theme.surface;
@@ -897,6 +947,17 @@ export component StreamTube inherits Window {
     in-out property <bool> notice-hidden;
 
     callback navigate(Screen);
+
+    function pick-category(index: int) {
+        content-focus.focus();
+        root.category = index;
+        root.feed-scroll = 0;
+        if root.screen == Screen.home {
+            root.reload();
+        } else {
+            root.navigate(Screen.home);
+        }
+    }
     callback back;
     callback reload;
     callback load-more;
@@ -956,8 +1017,8 @@ export component StreamTube inherits Window {
 
         // top bar
         if !root.auxiliary: HorizontalLayout {
-            height: 52px;
-            padding-left: 14px;
+            height: 50px;
+            padding-left: 16px;
             padding-right: 8px;
             spacing: 4px;
             Logo { horizontal-stretch: 1; }
@@ -1079,40 +1140,49 @@ export component StreamTube inherits Window {
             }
         }
 
-        // feed chips
-        if root.screen == Screen.home: Flickable {
+        // Home tabs; Subs opens the subscriptions feed, as on YouTube
+        if root.screen == Screen.home || root.screen == Screen.following: Flickable {
             height: 48px;
-            viewport-width: chips.preferred-width;
-            chips := HorizontalLayout {
+            viewport-width: tabs.preferred-width;
+            tabs := HorizontalLayout {
                 padding-left: 12px;
                 padding-right: 12px;
-                padding-top: 6px;
+                padding-top: 2px;
                 padding-bottom: 10px;
-                spacing: 8px;
-                Chip {
-                    label: root.personal-home ? UiText.tr("For you") : UiText.tr("All");
-                    selected: root.category == 0;
-                    pressed => { root.category = 0; root.feed-scroll = 0; root.reload(); }
+                spacing: 2px;
+                Tab {
+                    label: UiText.tr("Home");
+                    selected: root.screen == Screen.home && root.category == 0;
+                    pressed => { root.pick-category(0); }
                 }
-                Chip {
+                Tab {
+                    label: UiText.tr("Subs");
+                    selected: root.screen == Screen.following;
+                    pressed => {
+                        content-focus.focus();
+                        root.feed-scroll = 0;
+                        root.navigate(Screen.following);
+                    }
+                }
+                Tab {
                     label: UiText.tr("Music");
-                    selected: root.category == 1;
-                    pressed => { root.category = 1; root.feed-scroll = 0; root.reload(); }
+                    selected: root.screen == Screen.home && root.category == 1;
+                    pressed => { root.pick-category(1); }
                 }
-                Chip {
-                    label: UiText.tr("Games");
-                    selected: root.category == 2;
-                    pressed => { root.category = 2; root.feed-scroll = 0; root.reload(); }
-                }
-                Chip {
-                    label: UiText.tr("Tech");
-                    selected: root.category == 3;
-                    pressed => { root.category = 3; root.feed-scroll = 0; root.reload(); }
-                }
-                Chip {
+                Tab {
                     label: UiText.tr("Live");
-                    selected: root.category == 4;
-                    pressed => { root.category = 4; root.feed-scroll = 0; root.reload(); }
+                    selected: root.screen == Screen.home && root.category == 4;
+                    pressed => { root.pick-category(4); }
+                }
+                Tab {
+                    label: UiText.tr("Games");
+                    selected: root.screen == Screen.home && root.category == 2;
+                    pressed => { root.pick-category(2); }
+                }
+                Tab {
+                    label: UiText.tr("Tech");
+                    selected: root.screen == Screen.home && root.category == 3;
+                    pressed => { root.pick-category(3); }
                 }
             }
         }
@@ -1679,12 +1749,12 @@ export component StreamTube inherits Window {
             }
             SkeletonCard {
                 x: skeleton.x;
-                y: skeleton.height + 8px;
+                y: skeleton.height + 16px;
                 width: skeleton.width;
             }
             SkeletonCard {
                 x: skeleton.x;
-                y: (skeleton.height + 8px) * 2;
+                y: (skeleton.height + 16px) * 2;
                 width: skeleton.width;
             }
         }
@@ -1752,19 +1822,22 @@ export component StreamTube inherits Window {
             }
             for video in root.videos: Rectangle {
                 width: list.visible-width;
-                height: video.kind == 1 ? ShortsMetrics.shelf-height(self.width) + 12px : card.height + 8px;
+                height: video.kind == 1 ? ShortsMetrics.shelf-height(root.card-width) + 16px : card.height + 16px;
                 if video.kind == 1: ShortsShelf {
-                    width: parent.width;
+                    y: 0;
+                    width: root.card-width;
+                    x: (parent.width - self.width) / 2;
                     shorts: root.shorts-shelf;
                     watch(id) => { root.watch-short(id); }
                 }
                 card := VideoCard {
+                    y: 0;
                     visible: video.kind == 0;
                     width: root.card-width;
                     x: (parent.width - self.width) / 2;
-                    radius: root.wide ? 12px : 0px;
                     video: video;
                     watch => { root.watch(video.id); }
+                    save => { root.save(video.id); }
                     menu => { root.menu-video = video; root.menu-open = true; }
                     open-channel => { root.open-channel(video.channel-id, video.channel); }
                 }
@@ -1821,11 +1894,6 @@ export component StreamTube inherits Window {
                     pressed => { root.update-dismissed = true; }
                 }
             }
-        }
-
-        Rectangle {
-            height: 1px;
-            background: Theme.divider;
         }
 
         HorizontalLayout {
