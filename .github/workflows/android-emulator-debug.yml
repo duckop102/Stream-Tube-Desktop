@@ -1,0 +1,40 @@
+name: Android emulator debug
+
+# Throwaway: installs an APK on an Android emulator, opens Home and Shorts,
+# and uploads screenshots plus logcat. Lives only on the debug/emulator branch.
+
+on:
+  push:
+    branches: [debug/emulator]
+
+jobs:
+  emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      APK_URL: https://github.com/duckop102/Stream-Tube-Desktop/releases/download/android-10009/Stream-Tube-Android-0.1.0-b9.apk
+    steps:
+      - uses: actions/checkout@v5
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Get the APK
+        run: |
+          if [ -f debug/app.apk ]; then cp debug/app.apk app.apk; else curl -fsSL -o app.apk "$APK_URL"; fi
+          ls -l app.apk
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash .github/emulator-run.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-debug
+          path: out/
