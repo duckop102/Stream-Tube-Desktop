@@ -122,6 +122,8 @@ jobs:
           STREAMTUBE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           if (-not $env:KEYSTORE_BASE64) { throw 'Run mobile/android/tools/setup-android-release.ps1 to add the signing secrets.' }
+          # rust-cache restores target/ only in part; RustFerry refuses a partial asset cache
+          Remove-Item -Recurse -Force target/ferry, target/google-play -ErrorAction SilentlyContinue
           $keystore = Join-Path $env:RUNNER_TEMP 'release.jks'
           [IO.File]::WriteAllBytes($keystore, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
           $env:STREAMTUBE_KEYSTORE = $keystore
