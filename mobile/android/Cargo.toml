@@ -29,7 +29,6 @@ jni = "0.22.4"
 slint = { version = "=1.17.1", default-features = false, features = ["backend-android-activity-06", "renderer-skia"] }
 
 [build-dependencies]
-android-build = "0.1.4"
 slint-build = "=1.17.1"
 
 [lints.rust]

@@ -168,21 +168,6 @@ impl Client {
         parse_page(&payload, "browse", false, None)
     }
 
-    pub fn description(&self, id: &str) -> Option<String> {
-        if !is_video_id(id) {
-            return None;
-        }
-        let payload = self.innertube("next", json!({ "videoId": id }))?;
-        let results = payload.pointer("/contents/twoColumnWatchNextResults/results")?;
-        let info = find_value(results, "videoSecondaryInfoRenderer")?;
-        let description = info
-            .pointer("/attributedDescription/content")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| text(info.get("description")));
-        (!description.is_empty()).then(|| description.chars().take(12000).collect())
-    }
-
     pub fn related(&self, id: &str) -> Option<Vec<Video>> {
         if !is_video_id(id) {
             return None;
@@ -287,16 +272,6 @@ fn safe_data_origin(url: &Url) -> bool {
         && url.port().is_none()
         && url.username().is_empty()
         && url.password().is_none()
-}
-
-fn find_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
-    match value {
-        Value::Object(fields) => fields
-            .get(key)
-            .or_else(|| fields.values().find_map(|child| find_value(child, key))),
-        Value::Array(items) => items.iter().find_map(|child| find_value(child, key)),
-        _ => None,
-    }
 }
 
 pub fn is_playlist_id(id: &str) -> bool {
@@ -526,6 +501,7 @@ fn video_renderer(item: &Value, fallback: Option<&Channel>) -> Option<Video> {
                 .unwrap_or_default()
                 .to_owned(),
             name: text(Some(owner)),
+            ..Channel::default()
         }
     } else {
         fallback.cloned().unwrap_or_default()
@@ -541,6 +517,13 @@ fn video_renderer(item: &Value, fallback: Option<&Channel>) -> Option<Video> {
         ),
         published: text(item.get("publishedTimeText")),
         short: false,
+        avatar: field(
+            item,
+            "/channelThumbnailSupportedRenderers/channelThumbnailWithLinkRenderer/thumbnail/thumbnails/0/url",
+        )
+        .or_else(|| field(item, "/channelThumbnail/thumbnails/0/url"))
+        .map(image_url)
+        .unwrap_or_default(),
     })
 }
 
@@ -567,6 +550,13 @@ fn video_lockup(item: &Value, fallback: Option<&Channel>) -> Option<Video> {
                         "/commandRuns/0/onTap/innertubeCommand/browseEndpoint/browseId",
                     )
                 })
+                .or_else(|| {
+                    // newer lockups link the channel only from the avatar
+                    field(
+                        metadata,
+                        "/image/decoratedAvatarViewModel/rendererContext/commandContext/onTap/innertubeCommand/browseEndpoint/browseId",
+                    )
+                })
                 .filter(|id| is_channel_id(id))
                 .unwrap_or_default()
                 .to_owned(),
@@ -574,12 +564,21 @@ fn video_lockup(item: &Value, fallback: Option<&Channel>) -> Option<Video> {
                 .and_then(|node| field(node, "/content"))
                 .unwrap_or_default()
                 .to_owned(),
+            ..Channel::default()
         }
     };
+    let avatar = field(
+        metadata,
+        "/image/decoratedAvatarViewModel/avatar/avatarViewModel/image/sources/0/url",
+    )
+    .or_else(|| field(metadata, "/image/avatarViewModel/image/sources/0/url"))
+    .map(image_url)
+    .unwrap_or_default();
     let mut video = Video {
         id,
         title,
         channel,
+        avatar,
         ..Video::default()
     };
     if let Some(rows) = rows {
@@ -630,6 +629,88 @@ fn text(value: Option<&Value>) -> String {
         .flatten()
         .filter_map(|run| run.get("text").and_then(Value::as_str))
         .collect()
+}
+
+/// Absolute https URL for a thumbnail or avatar (YouTube sometimes omits the scheme).
+fn image_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("//") {
+        format!("https://{rest}")
+    } else {
+        url.to_owned()
+    }
+}
+
+/// Search suggestions for a partly typed query.
+pub fn suggestions(query: &str, language: Language) -> Vec<String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut url = Url::parse("https://suggestqueries.google.com/complete/search")
+        .expect("valid suggestions URL");
+    url.query_pairs_mut()
+        .append_pair("client", "firefox")
+        .append_pair("ds", "yt")
+        .append_pair("ie", "utf-8")
+        .append_pair("oe", "utf-8")
+        .append_pair("hl", language.code())
+        .append_pair("q", query);
+    let body = agent(Duration::from_secs(4))
+        .get(url.as_str())
+        .header("User-Agent", BROWSER_AGENT)
+        .call()
+        .ok()
+        .and_then(|mut response| {
+            response
+                .body_mut()
+                .with_config()
+                .limit(64 * 1024)
+                .read_to_string()
+                .ok()
+        });
+    body.map(|body| parse_suggestions(&body)).unwrap_or_default()
+}
+
+fn parse_suggestions(body: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    value
+        .get(1)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .take(10)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A channel avatar, scaled down for a small circle. Only YouTube image hosts are fetched.
+pub fn avatar(http: &ureq::Agent, url: &str) -> Option<RgbaImage> {
+    let parsed = Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    if parsed.scheme() != "https" || !(host.ends_with(".ggpht.com") || host.ends_with(".ytimg.com") || host.ends_with(".googleusercontent.com")) {
+        return None;
+    }
+    let bytes = http
+        .get(url)
+        .call()
+        .ok()?
+        .body_mut()
+        .with_config()
+        .limit(256 * 1024)
+        .read_to_vec()
+        .ok()?;
+    let mut reader = ImageReader::new(ImageCursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(1024);
+    limits.max_image_height = Some(1024);
+    limits.max_alloc = Some(8 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader.decode().ok()?;
+    Some(image.thumbnail(96, 96).into_rgba8())
 }
 
 pub fn thumbnail_agent() -> ureq::Agent {

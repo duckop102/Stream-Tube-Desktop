@@ -1,6 +1,6 @@
-import { AboutSlint, LineEdit, ListView, ScrollView, Palette, Spinner } from "std-widgets.slint";
+import { AboutSlint, ListView, ScrollView, Palette, Spinner } from "std-widgets.slint";
 
-export enum Screen { home, shorts, following, library, search, settings, channel, playlist, language }
+export enum Screen { home, shorts, following, library, search, settings, channel, playlist, language, you }
 
 export global UiText {
     in property <string> language;
@@ -9,6 +9,18 @@ export global UiText {
     pure public function tr(source: string) -> string {
         return root.lookup(root.language, source);
     }
+}
+
+// Colours of the YouTube-style dark theme.
+global Theme {
+    out property <color> background: #0f0f0f;
+    out property <color> surface: #272727;
+    out property <color> raised: #212121;
+    out property <color> pressed: #3f3f3f;
+    out property <color> text: #f1f1f1;
+    out property <color> secondary: #aaaaaa;
+    out property <color> divider: #ffffff1a;
+    out property <color> accent: #ff4e6a;
 }
 
 export struct LanguageRow {
@@ -20,6 +32,10 @@ export struct LanguageRow {
 export struct ChannelRow {
     id: string,
     name: string,
+    initial: string,
+    avatar-url: string,
+    avatar: image,
+    has-avatar: bool,
 }
 
 export struct VideoRow {
@@ -34,78 +50,182 @@ export struct VideoRow {
     short: bool,
     thumbnail: image,
     has-thumbnail: bool,
+    // 0 a video card, 1 the Shorts shelf
+    kind: int,
+    initial: string,
+    avatar-url: string,
+    avatar: image,
+    has-avatar: bool,
 }
 
-enum Glyph { none, home, shorts, following, library, settings, back }
+enum Glyph { none, home, shorts, following, you, settings, back, search, more, clock, fill, close, bookmark, block, channel, refresh }
 
 component Symbol inherits Path {
     in property <Glyph> glyph;
     in property <color> tint;
+    in property <bool> filled;
     viewbox-width: 24;
     viewbox-height: 24;
     stroke: root.tint;
     stroke-width: 1.8px;
-    fill: transparent;
-    commands: root.glyph == Glyph.home ? "M 3 10 L 12 3 L 21 10 L 21 21 L 15 21 L 15 15 L 9 15 L 9 21 L 3 21 Z"
-        : root.glyph == Glyph.shorts ? "M 6 3 L 18 3 L 18 21 L 6 21 Z M 10 8 L 15 12 L 10 16 Z"
-        : root.glyph == Glyph.following ? "M 3 8 L 21 8 L 21 21 L 3 21 Z M 6 5 L 18 5 M 9 2 L 15 2 M 10 11 L 15 14 L 10 17 Z"
-        : root.glyph == Glyph.library ? "M 7 4 L 20 4 L 20 21 L 7 21 Z M 3 7 L 3 21 M 10 8 L 17 8 M 10 12 L 17 12 M 10 16 L 15 16"
-        : root.glyph == Glyph.settings ? "M 3 6 L 21 6 M 3 12 L 21 12 M 3 18 L 21 18 M 8 3 L 8 9 M 15 9 L 15 15 M 10 15 L 10 21"
-        : root.glyph == Glyph.back ? "M 15 5 L 7 12 L 15 19" : "";
+    fill: root.filled ? root.tint : transparent;
+    fill-rule: evenodd;
+    commands: root.glyph == Glyph.home ? "M 4 10.5 L 12 4 L 20 10.5 L 20 20 L 14.5 20 L 14.5 14.5 L 9.5 14.5 L 9.5 20 L 4 20 Z"
+        : root.glyph == Glyph.shorts ? "M 8.5 3 L 15.5 3 L 18 6 L 18 18 L 15.5 21 L 8.5 21 L 6 18 L 6 6 Z M 10.5 9 L 14.5 12 L 10.5 15 Z"
+        : root.glyph == Glyph.following ? "M 4 8.5 L 20 8.5 L 20 20 L 4 20 Z M 6 5.5 L 18 5.5 M 8 2.8 L 16 2.8 M 10.5 11.5 L 14.5 14.2 L 10.5 17 Z"
+        : root.glyph == Glyph.you ? "M 12 4 A 3.6 3.6 0 1 1 11.99 4 Z M 5 20 C 5 15.6 8 13.6 12 13.6 C 16 13.6 19 15.6 19 20 Z"
+        : root.glyph == Glyph.settings ? "M 4 7 L 20 7 M 4 12 L 20 12 M 4 17 L 20 17 M 9 4.5 L 9 9.5 M 15 9.5 L 15 14.5 M 10 14.5 L 10 19.5"
+        : root.glyph == Glyph.back ? "M 20 12 L 4.5 12 M 11 5.5 L 4.5 12 L 11 18.5"
+        : root.glyph == Glyph.search ? "M 10.5 3.8 A 6.7 6.7 0 1 1 10.49 3.8 Z M 15.5 15.5 L 20.5 20.5"
+        : root.glyph == Glyph.more ? "M 12 4.2 A 1.5 1.5 0 1 1 11.99 4.2 Z M 12 10.5 A 1.5 1.5 0 1 1 11.99 10.5 Z M 12 16.8 A 1.5 1.5 0 1 1 11.99 16.8 Z"
+        : root.glyph == Glyph.clock ? "M 12 3.5 A 8.5 8.5 0 1 1 11.99 3.5 Z M 12 7.5 L 12 12 L 15.2 14"
+        : root.glyph == Glyph.fill ? "M 7 7 L 17.5 17.5 M 7 7 L 7 14.5 M 7 7 L 14.5 7"
+        : root.glyph == Glyph.close ? "M 6 6 L 18 18 M 18 6 L 6 18"
+        : root.glyph == Glyph.bookmark ? "M 7 3.8 L 17 3.8 L 17 20.2 L 12 16.6 L 7 20.2 Z"
+        : root.glyph == Glyph.block ? "M 12 3.5 A 8.5 8.5 0 1 1 11.99 3.5 Z M 6 6 L 18 18"
+        : root.glyph == Glyph.channel ? "M 3.5 5 L 20.5 5 L 20.5 19 L 3.5 19 Z M 12 8 A 2.4 2.4 0 1 1 11.99 8 Z M 7.5 16.5 C 8 14.2 9.8 13.3 12 13.3 C 14.2 13.3 16 14.2 16.5 16.5"
+        : root.glyph == Glyph.refresh ? "M 19 12 A 7 7 0 1 1 16.6 6.7 M 19 4 L 19 8.5 L 14.5 8.5" : "";
 }
 
-component Action inherits Rectangle {
-    in property <string> label;
-    in property <Glyph> glyph: Glyph.none;
-    in property <string> description: label;
-    in property <bool> active: true;
-    in property <bool> selected;
-    in property <bool> accent;
+// A round icon button with a soft press highlight.
+component IconButton inherits Rectangle {
+    in property <Glyph> glyph;
+    in property <string> description;
+    in property <color> tint: Theme.text;
+    in property <bool> filled;
+    in property <length> icon-size: 24px;
     callback pressed;
-
-    min-height: 44px;
-    min-width: 40px;
-    border-radius: 9px;
-    background: active ?
-        (selected || accent ? (touch.pressed ? #ac1f36 : #c8203c) : (touch.pressed ? #363740 : #232429))
-        : #1d1e23;
-    opacity: touch.pressed ? 0.82 : 1;
-    animate background { duration: 160ms; easing: ease-out; }
-    animate opacity { duration: 90ms; easing: ease-out; }
-    border-color: #f36b82;
-    border-width: keyboard.has-focus ? 1px : 0px;
+    width: 40px;
+    height: 40px;
+    border-radius: self.height / 2;
+    background: touch.pressed ? #ffffff26 : #ffffff00;
+    animate background { duration: 140ms; easing: ease-out; }
     accessible-role: button;
-    accessible-label: description;
-
-    if root.glyph != Glyph.none: Symbol {
-        width: 21px;
-        height: 21px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+    accessible-label: root.description;
+    Symbol {
+        width: root.icon-size;
+        height: root.icon-size;
         glyph: root.glyph;
-        tint: #ebebf1;
+        tint: root.tint;
+        filled: root.filled;
     }
-    if root.glyph == Glyph.none: Text {
-        text: root.label;
-        color: root.active ? #f8f7f9 : #9294a0;
-        font-size: 12px;
-        font-weight: 680;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-    keyboard := FocusScope {
-        enabled: root.active;
-        key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") {
-                root.pressed();
-                return accept;
-            }
-            reject
+    touch := TouchArea { clicked => { root.pressed(); } }
+}
+
+// Generic pill button: white when primary (like Subscribe), grey otherwise.
+component Pill inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> active: true;
+    callback pressed;
+    height: 36px;
+    min-width: 64px;
+    border-radius: self.height / 2;
+    background: !root.active ? #1f1f1f
+        : root.primary ? (touch.pressed ? #d9d9d9 : Theme.text)
+        : (touch.pressed ? Theme.pressed : Theme.surface);
+    animate background { duration: 140ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: root.label;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        Text {
+            text: root.label;
+            color: !root.active ? #717171 : root.primary ? #0f0f0f : Theme.text;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            overflow: elide;
         }
     }
     touch := TouchArea {
         enabled: root.active;
         clicked => { root.pressed(); }
+    }
+}
+
+component Chip inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback pressed;
+    height: 32px;
+    border-radius: 8px;
+    background: root.selected ? Theme.text : (touch.pressed ? Theme.pressed : Theme.surface);
+    animate background { duration: 180ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: root.label;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.label;
+            color: root.selected ? #0f0f0f : Theme.text;
+            animate color { duration: 180ms; easing: ease-out; }
+            font-size: 14px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea { clicked => { root.pressed(); } }
+}
+
+// Circle with the channel picture, or its initial while the picture loads.
+component Avatar inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-image;
+    in property <string> initial;
+    width: 36px;
+    height: self.width;
+    border-radius: self.width / 2;
+    clip: true;
+    background: #5a3a8c;
+    if !root.has-image: Text {
+        text: root.initial;
+        color: #ffffff;
+        font-size: root.width * 0.44;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.has-image: Image {
+        width: root.width;
+        height: root.height;
+        source: root.source;
+        image-fit: cover;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 220ms; easing: ease-out; }
+    }
+}
+
+// Stream Tube's own mark: the gradient tile with a play sign, and the wordmark.
+component Logo inherits HorizontalLayout {
+    spacing: 6px;
+    alignment: start;
+    Rectangle {
+        width: 30px;
+        height: 22px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 7px;
+        background: @linear-gradient(135deg, #ff5a5f 0%, #f0307e 50%, #7a3cf5 100%);
+        Path {
+            width: 12px;
+            height: 12px;
+            viewbox-width: 12;
+            viewbox-height: 12;
+            fill: #ffffff;
+            commands: "M 2.5 1 L 11 6 L 2.5 11 Z";
+        }
+    }
+    Text {
+        text: "StreamTube";
+        color: Theme.text;
+        font-size: 19px;
+        font-weight: 800;
+        letter-spacing: -0.6px;
+        vertical-alignment: center;
     }
 }
 
@@ -116,45 +236,39 @@ component NavigationItem inherits Rectangle {
     callback pressed;
 
     horizontal-stretch: 1;
-    height: 53px;
-    border-radius: 9px;
-    background: selected ? #331e27 : (touch.pressed ? #282930 : transparent);
-    animate background { duration: 220ms; easing: ease-out; }
+    height: 52px;
     accessible-role: button;
     accessible-label: label;
-    border-color: #f36b82;
-    border-width: keyboard.has-focus ? 1px : 0px;
+    Rectangle {
+        width: 56px;
+        height: 32px;
+        y: 2px;
+        border-radius: 16px;
+        background: touch.pressed ? #ffffff1f : #ffffff00;
+        animate background { duration: 160ms; easing: ease-out; }
+    }
     VerticalLayout {
         alignment: center;
-        spacing: 2px;
+        spacing: 3px;
         Rectangle {
-            height: 21px;
+            height: 24px;
             Symbol {
-                width: 21px;
-                height: 21px;
-                x: (parent.width - self.width) / 2;
-                y: root.selected ? -2px : 0px;
+                width: 24px;
+                height: 24px;
+                y: root.selected ? -1px : 0px;
                 animate y { duration: 260ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
                 glyph: root.glyph;
-                tint: root.selected ? #ff708b : #ccccd5;
+                tint: Theme.text;
+                filled: root.selected && root.glyph != Glyph.shorts;
             }
         }
         Text {
             text: root.label;
-            font-size: 11px;
-            font-weight: root.selected ? 700 : 500;
-            color: root.selected ? #fff2f4 : #bcbcc7;
-            animate color { duration: 220ms; easing: ease-out; }
+            font-size: 10px;
+            font-weight: root.selected ? 600 : 400;
+            color: Theme.text;
             horizontal-alignment: center;
-        }
-    }
-    keyboard := FocusScope {
-        key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") {
-                root.pressed();
-                return accept;
-            }
-            reject
+            overflow: elide;
         }
     }
     touch := TouchArea { clicked => { root.pressed(); } }
@@ -164,18 +278,15 @@ component LanguageItem inherits Rectangle {
     in property <LanguageRow> entry;
     in property <bool> selected;
     callback pressed;
-    height: 57px;
-    border-radius: 8px;
-    background: root.selected ? #30212a : touch.pressed ? #2d2d33 : transparent;
-    animate background { duration: 180ms; easing: ease-out; }
-    border-width: keyboard.has-focus ? 1px : 0px;
-    border-color: #f36b82;
+    height: 56px;
+    background: touch.pressed ? Theme.surface : transparent;
+    animate background { duration: 160ms; easing: ease-out; }
     accessible-role: button;
     accessible-label: root.entry.name + (root.entry.credit == "" ? "" : ", " + root.entry.credit);
 
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
+        padding-left: 16px;
+        padding-right: 16px;
         spacing: 8px;
         VerticalLayout {
             alignment: center;
@@ -183,60 +294,281 @@ component LanguageItem inherits Rectangle {
             spacing: 2px;
             Text {
                 text: root.entry.code == "system" ? UiText.tr("System") : root.entry.name;
-                color: #faf9fb;
+                color: Theme.text;
                 font-size: 15px;
-                font-weight: 650;
             }
             if root.entry.credit != "": Text {
                 text: root.entry.credit;
-                color: #d3b6bf;
+                color: Theme.secondary;
                 font-size: 12px;
             }
         }
         if root.selected: Text {
             text: "✓";
-            color: #f36b82;
+            color: Theme.text;
             font-size: 19px;
             vertical-alignment: center;
-        }
-    }
-    keyboard := FocusScope {
-        key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") {
-                root.pressed();
-                return accept;
-            }
-            reject
         }
     }
     touch := TouchArea { clicked => { root.pressed(); } }
 }
 
+// A video in a feed, laid out like the YouTube phone app.
 component VideoCard inherits Rectangle {
     in property <VideoRow> video;
+    in property <length> radius;
     callback watch;
-    callback save;
+    callback menu;
     callback open-channel;
-    property <length> frame-height: min(self.width * 9 / 16, 255px);
-    height: frame-height + 103px;
-    clip: true;
+    property <length> frame-height: self.width * 9 / 16;
+    height: frame-height + 12px + max(info.preferred-height, 40px) + 14px;
     opacity: 0;
     init => { self.opacity = 1; }
-    animate opacity { duration: 200ms; easing: ease-out; }
+    animate opacity { duration: 220ms; easing: ease-out; }
 
+    preview := Rectangle {
+        y: 0;
+        height: root.frame-height;
+        border-radius: root.radius;
+        clip: true;
+        background: Theme.surface;
+        accessible-role: button;
+        accessible-label: root.video.title;
+
+        if root.video.has-thumbnail: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.video.thumbnail;
+            image-fit: cover;
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: 260ms; easing: ease-out; }
+        }
+        if root.video.duration != "": Rectangle {
+            x: parent.width - self.width - 8px;
+            y: parent.height - self.height - 8px;
+            width: badge.preferred-width + 8px;
+            height: 20px;
+            border-radius: 4px;
+            background: root.video.duration == "LIVE" ? #cc0000 : #000000cc;
+            badge := Text {
+                text: root.video.duration;
+                color: #ffffff;
+                font-size: 12px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            background: preview-touch.pressed ? #00000059 : #00000000;
+            animate background { duration: 120ms; easing: ease-out; }
+        }
+        preview-touch := TouchArea { clicked => { root.watch(); } }
+    }
+
+    info := HorizontalLayout {
+        y: root.frame-height + 12px;
+        height: self.preferred-height;
+        padding-left: 12px;
+        padding-right: 2px;
+        spacing: 12px;
+        alignment: stretch;
+        Rectangle {
+            width: 36px;
+            Avatar {
+                y: 0;
+                source: root.video.avatar;
+                has-image: root.video.has-avatar;
+                initial: root.video.initial;
+            }
+            TouchArea {
+                height: 36px;
+                y: 0;
+                enabled: root.video.channel-id != "";
+                clicked => { root.open-channel(); }
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: start;
+            spacing: 4px;
+            title := Text {
+                text: root.video.title;
+                max-height: 40px;
+                horizontal-alignment: left;
+                vertical-alignment: top;
+                color: Theme.text;
+                font-size: 15px;
+                font-weight: 500;
+                wrap: word-wrap;
+                overflow: elide;
+                TouchArea { clicked => { root.watch(); } }
+            }
+            Text {
+                text: root.video.channel
+                    + (root.video.channel != "" && root.video.views != "" ? "  ·  " : "") + root.video.views
+                    + (root.video.published != "" ? "  ·  " + root.video.published : "");
+                color: Theme.secondary;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+        IconButton {
+            y: -8px;
+            glyph: Glyph.more;
+            filled: true;
+            icon-size: 20px;
+            description: UiText.tr("More actions");
+            pressed => { root.menu(); }
+        }
+    }
+}
+
+component ShortCard inherits Rectangle {
+    in property <VideoRow> video;
+    callback watch;
+    width: 156px;
+    height: 277px;
+    border-radius: 12px;
+    clip: true;
+    background: Theme.surface;
+    if root.video.has-thumbnail: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.video.thumbnail;
+        image-fit: cover;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 260ms; easing: ease-out; }
+    }
+    Rectangle {
+        y: parent.height - self.height;
+        height: 110px;
+        background: @linear-gradient(180deg, #00000000 0%, #000000c0 100%);
+    }
     VerticalLayout {
-        spacing: 7px;
-        padding-bottom: 12px;
-        preview := Rectangle {
-            height: root.frame-height;
-            border-radius: 11px;
-            clip: true;
-            background: #25262d;
-            border-color: #f36b82;
-            border-width: player-focus.has-focus ? 2px : 0px;
-            accessible-role: button;
-            accessible-label: root.video.title;
+        padding: 10px;
+        alignment: end;
+        spacing: 3px;
+        Text {
+            text: root.video.title;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 600;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: 40px;
+        }
+        Text {
+            text: root.video.views;
+            color: #ffffffd0;
+            font-size: 12px;
+            overflow: elide;
+        }
+    }
+    Rectangle {
+        background: touch.pressed ? #00000059 : #00000000;
+        animate background { duration: 120ms; easing: ease-out; }
+    }
+    touch := TouchArea { clicked => { root.watch(); } }
+}
 
+component ShortsShelf inherits Rectangle {
+    in property <[VideoRow]> shorts;
+    callback watch(string);
+    height: 340px;
+    VerticalLayout {
+        padding-top: 4px;
+        spacing: 12px;
+        HorizontalLayout {
+            padding-left: 12px;
+            spacing: 8px;
+            height: 26px;
+            Symbol {
+                width: 24px;
+                height: 24px;
+                glyph: Glyph.shorts;
+                tint: Theme.accent;
+                filled: false;
+            }
+            Text {
+                text: UiText.tr("Shorts");
+                color: Theme.text;
+                font-size: 18px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+        Flickable {
+            height: 277px;
+            viewport-width: row.preferred-width;
+            row := HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                for short in root.shorts: ShortCard {
+                    video: short;
+                    watch => { root.watch(short.id); }
+                }
+            }
+        }
+    }
+}
+
+// Placeholder card that pulses while a feed loads.
+component SkeletonCard inherits Rectangle {
+    property <float> glow: 0.55 + 0.25 * Math.sin(animation-tick() / 1ms * 0.0045 * 1rad);
+    property <length> frame-height: self.width * 9 / 16;
+    height: frame-height + 96px;
+    Rectangle {
+        y: 0;
+        height: root.frame-height;
+        background: Theme.surface;
+        opacity: root.glow;
+    }
+    Rectangle {
+        x: 12px;
+        y: root.frame-height + 12px;
+        width: 36px;
+        height: 36px;
+        border-radius: 18px;
+        background: Theme.surface;
+        opacity: root.glow;
+    }
+    Rectangle {
+        x: 60px;
+        y: root.frame-height + 14px;
+        width: root.width - 100px;
+        height: 14px;
+        border-radius: 4px;
+        background: Theme.surface;
+        opacity: root.glow;
+    }
+    Rectangle {
+        x: 60px;
+        y: root.frame-height + 38px;
+        width: (root.width - 100px) * 0.6;
+        height: 12px;
+        border-radius: 4px;
+        background: Theme.surface;
+        opacity: root.glow;
+    }
+}
+
+// A small card for the rows on the You tab.
+component MiniCard inherits Rectangle {
+    in property <VideoRow> video;
+    callback watch;
+    width: 160px;
+    height: 150px;
+    VerticalLayout {
+        spacing: 6px;
+        Rectangle {
+            height: 90px;
+            border-radius: 8px;
+            clip: true;
+            background: Theme.surface;
             if root.video.has-thumbnail: Image {
                 width: parent.width;
                 height: parent.height;
@@ -246,100 +578,119 @@ component VideoCard inherits Rectangle {
                 init => { self.opacity = 1; }
                 animate opacity { duration: 260ms; easing: ease-out; }
             }
-            Rectangle {
-                background: preview-touch.pressed ? #00000052 : #00000000;
-                animate background { duration: 120ms; easing: ease-out; }
-            }
-            if !root.video.has-thumbnail: Text {
-                text: "▶";
-                font-size: 26px;
-                color: #b4b4c0;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            if root.video.duration != "" || root.video.short: Rectangle {
-                x: parent.width - self.width - 9px;
-                y: parent.height - self.height - 8px;
-                width: 61px;
-                height: 22px;
-                border-radius: 5px;
-                background: #0e0f13ec;
-                Text {
-                    text: root.video.short ? UiText.tr("Shorts") : root.video.duration;
+            if root.video.duration != "": Rectangle {
+                x: parent.width - self.width - 5px;
+                y: parent.height - self.height - 5px;
+                width: mini-badge.preferred-width + 6px;
+                height: 17px;
+                border-radius: 3px;
+                background: #000000cc;
+                mini-badge := Text {
+                    text: root.video.duration;
                     color: #ffffff;
                     font-size: 11px;
+                    font-weight: 600;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
             }
-            player-focus := FocusScope {
-                key-pressed(event) => {
-                    if (event.text == Key.Return || event.text == " ") {
-                        root.watch();
-                        return accept;
-                    }
-                    reject
-                }
+            Rectangle {
+                background: touch.pressed ? #00000059 : #00000000;
+                animate background { duration: 120ms; easing: ease-out; }
             }
-            preview-touch := TouchArea { clicked => { root.watch(); } }
         }
+        Text {
+            text: root.video.title;
+            color: Theme.text;
+            font-size: 13px;
+            wrap: word-wrap;
+            overflow: elide;
+            height: 34px;
+        }
+        Text {
+            text: root.video.channel;
+            color: Theme.secondary;
+            font-size: 12px;
+            overflow: elide;
+        }
+    }
+    touch := TouchArea { clicked => { root.watch(); } }
+}
 
-        HorizontalLayout {
-            spacing: 8px;
-            VerticalLayout {
-                horizontal-stretch: 1;
-                spacing: 3px;
-                Rectangle {
-                    height: 37px;
-                    Text {
-                        text: root.video.title;
-                        width: parent.width;
-                        height: parent.height;
-                        horizontal-alignment: left;
-                        vertical-alignment: top;
-                        color: #f8f7f9;
-                        font-size: 15px;
-                        font-weight: 680;
-                        wrap: word-wrap;
-                        overflow: elide;
-                    }
-                    TouchArea { clicked => { root.watch(); } }
-                }
-                if root.video.channel != "": Rectangle {
-                    height: 20px;
-                    accessible-role: button;
-                    accessible-label: root.video.channel;
-                    Text {
-                        text: root.video.channel;
-                        width: parent.width;
-                        height: parent.height;
-                        horizontal-alignment: left;
-                        vertical-alignment: center;
-                        color: #d3b6bf;
-                        font-size: 13px;
-                        overflow: elide;
-                    }
-                    TouchArea {
-                        enabled: root.video.channel-id != "";
-                        clicked => { root.open-channel(); }
-                    }
-                }
-                if root.video.views != "" || root.video.published != "": Text {
-                    height: 17px;
-                    text: root.video.views + (root.video.views != "" && root.video.published != "" ? ", " : "") + root.video.published;
-                    color: #a5a5b1;
-                    font-size: 12px;
-                    overflow: elide;
-                }
+component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> detail;
+    in property <bool> toggle;
+    in property <bool> checked;
+    in property <bool> chevron;
+    callback pressed;
+    height: root.detail == "" ? 52px : 64px;
+    background: touch.pressed ? Theme.surface : transparent;
+    animate background { duration: 140ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: root.label;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 15px;
+                overflow: elide;
             }
-            Action {
-                width: 78px;
-                height: 44px;
-                label: root.video.saved ? (UiText.tr("Saved")) : (UiText.tr("Save"));
-                selected: root.video.saved;
-                pressed => { root.save(); }
+            if root.detail != "": Text {
+                text: root.detail;
+                color: Theme.secondary;
+                font-size: 12px;
+                overflow: elide;
             }
         }
+        if root.toggle: Rectangle {
+            width: 42px;
+            // the switch mirrors the setting; the row's touch area changes it
+            track := Rectangle {
+                width: 36px;
+                height: 20px;
+                border-radius: 10px;
+                background: root.checked ? #3ea6ff : #717171;
+                animate background { duration: 180ms; easing: ease-out; }
+                Rectangle {
+                    x: root.checked ? parent.width - self.width - 2px : 2px;
+                    animate x { duration: 200ms; easing: ease-out; }
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    background: #ffffff;
+                }
+            }
+        }
+        if root.chevron: Text {
+            text: "›";
+            color: Theme.secondary;
+            font-size: 22px;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea { clicked => { root.pressed(); } }
+}
+
+component SectionTitle inherits HorizontalLayout {
+    in property <string> text;
+    padding-left: 16px;
+    padding-right: 16px;
+    height: 44px;
+    Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 18px;
+        font-weight: 700;
+        vertical-alignment: center;
+        overflow: elide;
     }
 }
 
@@ -349,47 +700,76 @@ component SignInCode inherits Rectangle {
     callback cancel;
 
     border-radius: 12px;
-    background: #232429;
+    background: Theme.raised;
     border-width: 1px;
-    border-color: #4a2a35;
+    border-color: Theme.divider;
     opacity: 0;
     init => { self.opacity = 1; }
     animate opacity { duration: 220ms; easing: ease-out; }
 
     VerticalLayout {
-        padding: 14px;
-        spacing: 9px;
+        padding: 16px;
+        spacing: 10px;
         Text {
             text: UiText.tr("Confirm this code on youtube.com/activate");
-            color: #c3c2ce;
+            color: Theme.secondary;
             font-size: 13px;
             wrap: word-wrap;
             horizontal-alignment: center;
         }
         Text {
             text: root.code;
-            color: #ffffff;
+            color: Theme.text;
             font-size: 28px;
             font-weight: 800;
             letter-spacing: 3px;
             horizontal-alignment: center;
         }
         HorizontalLayout {
-            spacing: 6px;
-            height: 44px;
-            Action {
-                horizontal-stretch: 1;
+            spacing: 8px;
+            alignment: center;
+            Pill {
                 label: UiText.tr("Open youtube.com/activate");
-                accent: true;
+                primary: true;
                 pressed => { root.open(); }
             }
-            Action {
-                width: 90px;
+            Pill {
                 label: UiText.tr("Cancel");
                 pressed => { root.cancel(); }
             }
         }
     }
+}
+
+component SheetRow inherits Rectangle {
+    in property <Glyph> glyph;
+    in property <string> label;
+    in property <bool> filled;
+    callback pressed;
+    height: 52px;
+    background: touch.pressed ? Theme.pressed : transparent;
+    animate background { duration: 120ms; easing: ease-out; }
+    HorizontalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        spacing: 20px;
+        Symbol {
+            width: 24px;
+            height: 24px;
+            y: (parent.height - self.height) / 2;
+            glyph: root.glyph;
+            tint: Theme.text;
+            filled: root.filled;
+        }
+        Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: 15px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+    touch := TouchArea { clicked => { root.pressed(); } }
 }
 
 export component StreamTube inherits Window {
@@ -398,11 +778,17 @@ export component StreamTube inherits Window {
     min-height: 300px;
     preferred-width: 412px;
     preferred-height: 820px;
-    background: #151619;
+    background: Theme.background;
+    default-font-size: 14px;
     init => { Palette.color-scheme = ColorScheme.dark; content-focus.focus(); }
 
     in property <[VideoRow]> videos;
+    in property <[VideoRow]> shorts-shelf;
+    in property <[VideoRow]> history-preview;
+    in property <[VideoRow]> saved-preview;
     in property <[ChannelRow]> channels;
+    in property <[string]> suggestions;
+    in property <[string]> recent-searches;
     in property <bool> busy;
     in property <bool> has-more;
     in property <bool> personal-home;
@@ -422,10 +808,15 @@ export component StreamTube inherits Window {
     in property <string> channel-name;
     in property <bool> channel-followed;
     in property <bool> channel-remote;
+    in property <string> channel-initial;
+    in property <image> channel-avatar;
+    in property <bool> channel-has-avatar;
+    in property <string> channel-avatar-url;
     in property <bool> account-available;
     in property <bool> account-connected;
     in property <bool> account-busy;
     in property <string> account-name;
+    in property <string> account-initial;
     in property <string> account-message;
     in property <string> account-code;
     in property <string> app-version;
@@ -436,14 +827,26 @@ export component StreamTube inherits Window {
     in property <string> update-error;
     in-out property <bool> update-dismissed;
     in-out property <string> search-query;
+    in-out property <bool> search-editing: true;
     in-out property <int> category: 0;
     in-out property <bool> history-mode: false;
     in-out property <bool> channels-mode: false;
+    in-out property <length> feed-scroll: 0px;
     property <bool> showing-channels: screen == Screen.following && channels-mode;
     in-out property <Screen> screen: Screen.home;
     in-out property <Screen> tab: Screen.home;
     property <bool> auxiliary: screen == Screen.search || screen == Screen.settings
-        || screen == Screen.channel || screen == Screen.playlist || screen == Screen.language;
+        || screen == Screen.channel || screen == Screen.playlist || screen == Screen.language
+        || screen == Screen.library;
+    property <bool> feed-screen: screen != Screen.settings && screen != Screen.language
+        && screen != Screen.you && screen != Screen.shorts
+        && !(screen == Screen.search && root.search-editing);
+    property <length> card-width: min(self.width - root.safe-area-insets.left - root.safe-area-insets.right, 640px);
+    property <bool> wide: self.width > 660px;
+    // the video the ⋮ sheet is about
+    property <VideoRow> menu-video;
+    property <bool> menu-open;
+    in-out property <bool> notice-hidden;
 
     callback navigate(Screen);
     callback back;
@@ -453,8 +856,12 @@ export component StreamTube inherits Window {
     callback open-shorts;
     callback player-event(int, int, string);
     callback submit(string);
+    callback query-changed(string);
     callback watch(string);
+    callback watch-short(string);
+    callback watch-preview(bool, string);
     callback save(string);
+    callback hide-video(string);
     callback open-channel(string, string);
     callback follow;
     callback choose-language(int);
@@ -470,10 +877,16 @@ export component StreamTube inherits Window {
     callback check-updates;
     callback install-update;
 
+    changed notice => { root.notice-hidden = false; }
+
     content-focus := FocusScope {
         width: 0px;
         height: 0px;
         key-pressed(event) => {
+            if (event.text == Key.Back && root.menu-open) {
+                root.menu-open = false;
+                return accept;
+            }
             if (event.text == Key.Back && root.auxiliary) {
                 root.back();
                 return accept;
@@ -483,179 +896,364 @@ export component StreamTube inherits Window {
     }
 
     VerticalLayout {
-        padding-top: 6px + root.safe-area-insets.top;
-        padding-bottom: 5px + root.safe-area-insets.bottom;
-        padding-left: 12px + root.safe-area-insets.left;
-        padding-right: 12px + root.safe-area-insets.right;
-        spacing: 7px;
+        padding-top: root.safe-area-insets.top;
+        padding-bottom: root.safe-area-insets.bottom;
+        padding-left: root.safe-area-insets.left;
+        padding-right: root.safe-area-insets.right;
+        spacing: 0px;
 
-        HorizontalLayout {
-            height: 48px;
-            spacing: 8px;
+        // top bar
+        if !root.auxiliary: HorizontalLayout {
+            height: 52px;
+            padding-left: 14px;
+            padding-right: 8px;
+            spacing: 4px;
+            Logo { horizontal-stretch: 1; }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Glyph.search;
+                description: UiText.tr("Search");
+                pressed => { root.search-editing = true; root.navigate(Screen.search); }
+            }
+            Rectangle {
+                width: 40px;
+                Avatar {
+                    width: 28px;
+                    initial: root.account-connected ? root.account-initial : "";
+                    has-image: false;
+                    background: root.account-connected ? #00897b : Theme.surface;
+                }
+                if !root.account-connected: Symbol {
+                    width: 18px;
+                    height: 18px;
+                    glyph: Glyph.you;
+                    tint: Theme.text;
+                }
+                TouchArea { clicked => { content-focus.focus(); root.navigate(Screen.settings); } }
+            }
+        }
 
-            if root.auxiliary: Action {
-                width: 43px;
+        if root.auxiliary && root.screen != Screen.search: HorizontalLayout {
+            height: 52px;
+            padding-left: 4px;
+            padding-right: 8px;
+            spacing: 6px;
+            IconButton {
+                y: (parent.height - self.height) / 2;
                 glyph: Glyph.back;
                 description: UiText.tr("Back");
                 pressed => { content-focus.focus(); root.back(); }
             }
-            if !root.auxiliary: Image {
-                source: @image-url("../../assets/icon.png");
-                width: 32px;
-                height: 32px;
-                y: (parent.height - self.height) / 2;
-                image-fit: contain;
-            }
             Text {
                 horizontal-stretch: 1;
-                text: root.screen == Screen.settings ? (UiText.tr("Settings"))
-                    : root.screen == Screen.search ? (UiText.tr("Search"))
+                text: root.screen == Screen.settings ? UiText.tr("Settings")
                     : root.screen == Screen.channel ? root.channel-name
                     : root.screen == Screen.playlist ? UiText.tr("Playlist")
                     : root.screen == Screen.language ? UiText.tr("App language")
-                    : root.screen == Screen.shorts ? UiText.tr("Shorts")
-                    : root.screen == Screen.following ? (UiText.tr("Subscriptions"))
-                    : root.screen == Screen.library ? (UiText.tr("Library"))
+                    : root.screen == Screen.library ? (root.history-mode ? UiText.tr("History") : UiText.tr("Watch later"))
                     : "Stream Tube";
-                color: #faf9fb;
-                font-size: 21px;
-                font-weight: 750;
+                color: Theme.text;
+                font-size: 19px;
+                font-weight: 700;
                 overflow: elide;
                 vertical-alignment: center;
             }
-            if root.screen != Screen.search && root.screen != Screen.language: Action {
-                width: 70px;
-                label: UiText.tr("Search");
-                pressed => { root.navigate(Screen.search); }
-            }
-            if root.screen != Screen.settings && root.screen != Screen.language: Action {
-                width: 42px;
-                glyph: Glyph.settings;
-                description: UiText.tr("Settings");
-                pressed => { content-focus.focus(); root.navigate(Screen.settings); }
+            if root.screen == Screen.channel || root.screen == Screen.playlist: IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Glyph.search;
+                description: UiText.tr("Search");
+                pressed => { root.search-editing = true; root.navigate(Screen.search); }
             }
         }
 
-        if root.screen == Screen.home: HorizontalLayout {
-            height: 44px;
-            spacing: 5px;
-            Action {
-                label: root.personal-home ? UiText.tr("For you") : UiText.tr("All");
-                horizontal-stretch: 1;
-                selected: root.category == 0;
-                pressed => { root.category = 0; root.reload(); }
+        // search bar
+        if root.screen == Screen.search: HorizontalLayout {
+            height: 56px;
+            padding-left: 4px;
+            padding-right: 8px;
+            spacing: 4px;
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Glyph.back;
+                description: UiText.tr("Back");
+                pressed => { content-focus.focus(); root.back(); }
             }
-            Action {
-                label: UiText.tr("Music");
+            Rectangle {
                 horizontal-stretch: 1;
-                selected: root.category == 1;
-                pressed => { root.category = 1; root.reload(); }
-            }
-            Action {
-                label: UiText.tr("Games");
-                horizontal-stretch: 1;
-                selected: root.category == 2;
-                pressed => { root.category = 2; root.reload(); }
-            }
-            Action {
-                label: UiText.tr("Tech");
-                horizontal-stretch: 1;
-                selected: root.category == 3;
-                pressed => { root.category = 3; root.reload(); }
-            }
-            Action {
-                label: UiText.tr("Live");
-                horizontal-stretch: 1;
-                selected: root.category == 4;
-                pressed => { root.category = 4; root.reload(); }
+                height: 40px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 20px;
+                background: Theme.surface;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 2px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        if root.search-query == "": Text {
+                            x: 10px;
+                            text: UiText.tr("Search YouTube");
+                            color: Theme.secondary;
+                            font-size: 16px;
+                            vertical-alignment: center;
+                        }
+                        query := TextInput {
+                            x: 10px;
+                            width: parent.width - 14px;
+                            text <=> root.search-query;
+                            color: Theme.text;
+                            font-size: 16px;
+                            single-line: true;
+                            vertical-alignment: center;
+                            selection-background-color: #3ea6ff80;
+                            input-type: text;
+                            init => { if root.search-editing { self.focus(); } }
+                            edited => { root.search-editing = true; root.query-changed(self.text); }
+                            accepted => {
+                                content-focus.focus();
+                                root.search-editing = false;
+                                root.submit(self.text);
+                            }
+                        }
+                        TouchArea {
+                            enabled: !root.search-editing;
+                            clicked => { root.search-editing = true; root.query-changed(root.search-query); query.focus(); }
+                        }
+                    }
+                    if root.search-query != "": IconButton {
+                        width: 36px;
+                        height: 36px;
+                        y: 2px;
+                        glyph: Glyph.close;
+                        icon-size: 18px;
+                        description: UiText.tr("Clear");
+                        pressed => {
+                            root.search-query = "";
+                            root.search-editing = true;
+                            root.query-changed("");
+                            query.focus();
+                        }
+                    }
+                }
             }
         }
 
+        // feed chips
+        if root.screen == Screen.home: Flickable {
+            height: 48px;
+            viewport-width: chips.preferred-width;
+            chips := HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 6px;
+                padding-bottom: 10px;
+                spacing: 8px;
+                Chip {
+                    label: root.personal-home ? UiText.tr("For you") : UiText.tr("All");
+                    selected: root.category == 0;
+                    pressed => { root.category = 0; root.feed-scroll = 0; root.reload(); }
+                }
+                Chip {
+                    label: UiText.tr("Music");
+                    selected: root.category == 1;
+                    pressed => { root.category = 1; root.feed-scroll = 0; root.reload(); }
+                }
+                Chip {
+                    label: UiText.tr("Games");
+                    selected: root.category == 2;
+                    pressed => { root.category = 2; root.feed-scroll = 0; root.reload(); }
+                }
+                Chip {
+                    label: UiText.tr("Tech");
+                    selected: root.category == 3;
+                    pressed => { root.category = 3; root.feed-scroll = 0; root.reload(); }
+                }
+                Chip {
+                    label: UiText.tr("Live");
+                    selected: root.category == 4;
+                    pressed => { root.category = 4; root.feed-scroll = 0; root.reload(); }
+                }
+            }
+        }
+
+        // subscriptions: channel avatars and the Videos / Channels switch
+        if root.screen == Screen.following && root.channels.length > 0 && !root.channels-mode: Flickable {
+            height: 96px;
+            viewport-width: avatars.preferred-width;
+            avatars := HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-top: 6px;
+                spacing: 4px;
+                for channel in root.channels: Rectangle {
+                    width: 72px;
+                    height: 84px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        HorizontalLayout {
+                            alignment: center;
+                            Avatar {
+                                width: 56px;
+                                source: channel.avatar;
+                                has-image: channel.has-avatar;
+                                initial: channel.initial;
+                            }
+                        }
+                        Text {
+                            text: channel.name;
+                            color: Theme.secondary;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    TouchArea { clicked => { root.open-channel(channel.id, channel.name); } }
+                }
+            }
+        }
         if root.screen == Screen.following: HorizontalLayout {
-            height: 44px;
-            spacing: 6px;
-            Action {
-                horizontal-stretch: 1;
+            height: 48px;
+            padding-left: 12px;
+            padding-top: 4px;
+            padding-bottom: 12px;
+            spacing: 8px;
+            alignment: start;
+            Chip {
                 label: UiText.tr("Videos");
                 selected: !root.channels-mode;
                 pressed => { root.channels-mode = false; root.reload(); }
             }
-            Action {
-                horizontal-stretch: 1;
+            Chip {
                 label: UiText.tr("Channels");
                 selected: root.channels-mode;
                 pressed => { root.channels-mode = true; root.reload(); }
             }
         }
-
-        if root.screen == Screen.following && !root.account-connected && root.account-available: Action {
-            label: root.account-busy ? (UiText.tr("Waiting for sign-in…"))
-                : (UiText.tr("Sign in to YouTube"));
-            accent: true;
-            active: !root.account-busy;
-            pressed => { root.authorize-account(); }
+        if root.screen == Screen.following && !root.account-connected && root.account-code == "": VerticalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 4px;
+            padding-bottom: 14px;
+            spacing: 10px;
+            Text {
+                text: UiText.tr("Don't miss new videos");
+                color: Theme.text;
+                font-size: 17px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: UiText.tr("Sign in to see updates from the channels you follow on YouTube");
+                color: Theme.secondary;
+                font-size: 13px;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+            }
+            HorizontalLayout {
+                alignment: center;
+                Pill {
+                    label: root.account-busy ? UiText.tr("Waiting for sign-in…") : UiText.tr("Sign in");
+                    primary: true;
+                    active: !root.account-busy;
+                    pressed => { root.authorize-account(); }
+                }
+            }
         }
-
-        if root.screen == Screen.following && root.account-code != "": SignInCode {
-            code: root.account-code;
-            open => { root.open-activation(); }
-            cancel => { root.cancel-sign-in(); }
+        if root.screen == Screen.following && root.account-code != "": HorizontalLayout {
+            padding: 12px;
+            SignInCode {
+                code: root.account-code;
+                open => { root.open-activation(); }
+                cancel => { root.cancel-sign-in(); }
+            }
         }
-
         if root.screen == Screen.following && root.account-message != "": Text {
             text: UiText.tr(root.account-message);
-            color: #e6b3bf;
+            color: Theme.accent;
             font-size: 13px;
             wrap: word-wrap;
+            horizontal-alignment: center;
         }
 
-        if root.screen == Screen.library: HorizontalLayout {
-            height: 44px;
-            spacing: 6px;
-            Action {
-                horizontal-stretch: 1;
-                label: UiText.tr("Saved");
-                selected: !root.history-mode;
-                pressed => { root.history-mode = false; root.reload(); }
-            }
-            Action {
-                horizontal-stretch: 1;
-                label: UiText.tr("History");
-                selected: root.history-mode;
-                pressed => { root.history-mode = true; root.reload(); }
-            }
-        }
-
+        // channel header
         if root.screen == Screen.channel: HorizontalLayout {
-            height: 44px;
-            spacing: 8px;
-            Action {
-                width: 133px;
-                label: root.channel-remote || root.channel-followed
-                    ? UiText.tr("Subscribed")
-                    : UiText.tr("Subscribe");
-                active: !root.channel-remote;
-                selected: root.channel-remote || root.channel-followed;
-                pressed => { root.follow(); }
+            padding: 16px;
+            padding-top: 6px;
+            spacing: 16px;
+            height: 104px;
+            Avatar {
+                width: 72px;
+                y: 0;
+                source: root.channel-avatar;
+                has-image: root.channel-has-avatar;
+                initial: root.channel-initial;
             }
-            Rectangle { horizontal-stretch: 1; }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: start;
+                spacing: 10px;
+                Text {
+                    text: root.channel-name;
+                    color: Theme.text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    Pill {
+                        label: root.channel-remote || root.channel-followed ? UiText.tr("Subscribed") : UiText.tr("Subscribe");
+                        primary: !(root.channel-remote || root.channel-followed);
+                        active: !root.channel-remote;
+                        pressed => { root.follow(); }
+                    }
+                }
+            }
         }
 
-        if root.screen == Screen.search: HorizontalLayout {
-            height: 47px;
-            spacing: 7px;
-            query := LineEdit {
-                text <=> root.search-query;
-                placeholder-text: UiText.tr("Search YouTube");
-                accepted => { content-focus.focus(); root.submit(self.text); }
-                horizontal-stretch: 1;
-            }
-            Action {
-                width: 70px;
-                label: UiText.tr("Search");
-                accent: true;
-                active: query.text != "";
-                pressed => { content-focus.focus(); root.submit(query.text); }
+        // search suggestions and recent searches
+        if root.screen == Screen.search && root.search-editing: ListView {
+            vertical-stretch: 1;
+            mouse-drag-pan-enabled: true;
+            for entry in (root.search-query == "" ? root.recent-searches : root.suggestions): Rectangle {
+                height: 52px;
+                background: suggestion-touch.pressed ? Theme.surface : transparent;
+                animate background { duration: 120ms; easing: ease-out; }
+                suggestion-touch := TouchArea {
+                    clicked => {
+                        root.search-query = entry;
+                        root.search-editing = false;
+                        content-focus.focus();
+                        root.submit(entry);
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 4px;
+                    spacing: 18px;
+                    Symbol {
+                        width: 22px;
+                        height: 22px;
+                        y: (parent.height - self.height) / 2;
+                        glyph: root.search-query == "" ? Glyph.clock : Glyph.search;
+                        tint: Theme.text;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: entry;
+                        color: Theme.text;
+                        font-size: 15px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        glyph: Glyph.fill;
+                        icon-size: 20px;
+                        description: UiText.tr("Edit search");
+                        pressed => { root.search-query = entry + " "; root.query-changed(entry + " "); }
+                    }
+                }
             }
         }
 
@@ -667,131 +1265,147 @@ export component StreamTube inherits Window {
             mouse-drag-pan-enabled: true;
             viewport-height: preferences.preferred-height;
             preferences := VerticalLayout {
-                padding-top: 6px;
-                padding-bottom: 16px;
-                spacing: 9px;
-                Text {
-                    text: root.account-name != "" ? root.account-name : (UiText.tr("YouTube account"));
-                    color: #f6f6fa;
-                    font-size: 16px;
-                    font-weight: 700;
-                    height: 29px;
-                    overflow: elide;
-                }
-                if root.account-available: Action {
-                    label: root.account-busy ? (UiText.tr("Waiting for sign-in…"))
-                        : root.account-connected ? (UiText.tr("Switch account"))
-                        : (UiText.tr("Sign in to YouTube"));
-                    accent: !root.account-connected;
-                    active: !root.account-busy;
-                    pressed => { root.authorize-account(); }
-                }
-                if root.account-code != "": SignInCode {
-                    code: root.account-code;
-                    open => { root.open-activation(); }
-                    cancel => { root.cancel-sign-in(); }
-                }
-                if root.account-connected: HorizontalLayout {
-                    spacing: 6px;
-                    height: 44px;
-                    Action {
+                padding-bottom: 24px;
+                spacing: 0px;
+                HorizontalLayout {
+                    padding: 16px;
+                    spacing: 14px;
+                    height: 80px;
+                    Avatar {
+                        width: 48px;
+                        y: 0;
+                        initial: root.account-connected ? root.account-initial : "?";
+                        background: root.account-connected ? #00897b : Theme.surface;
+                    }
+                    VerticalLayout {
                         horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 2px;
+                        Text {
+                            text: root.account-connected ? root.account-name : UiText.tr("YouTube account");
+                            color: Theme.text;
+                            font-size: 17px;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.account-connected ? UiText.tr("Signed in") : UiText.tr("Not signed in");
+                            color: Theme.secondary;
+                            font-size: 12px;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
+                    alignment: start;
+                    Pill {
+                        label: root.account-busy ? UiText.tr("Waiting for sign-in…")
+                            : root.account-connected ? UiText.tr("Switch account") : UiText.tr("Sign in");
+                        primary: !root.account-connected;
+                        active: !root.account-busy;
+                        pressed => { root.authorize-account(); }
+                    }
+                    if root.account-connected: Pill {
                         label: UiText.tr("Refresh");
                         active: !root.account-busy;
                         pressed => { root.refresh-account(); }
                     }
-                    Action {
-                        horizontal-stretch: 1;
+                    if root.account-connected: Pill {
                         label: UiText.tr("Disconnect");
                         pressed => { root.disconnect-account(); }
                     }
                 }
-                if !root.account-available || root.account-message != "": Text {
-                    text: root.account-message != "" ? UiText.tr(root.account-message)
-                        : (UiText.tr("Google Play services are required"));
+                if root.account-code != "": HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-bottom: 10px;
+                    SignInCode {
+                        code: root.account-code;
+                        open => { root.open-activation(); }
+                        cancel => { root.cancel-sign-in(); }
+                    }
+                }
+                if root.account-message != "": Text {
+                    text: UiText.tr(root.account-message);
                     wrap: word-wrap;
-                    color: #c3c2ce;
+                    color: Theme.accent;
                     font-size: 13px;
+                    horizontal-alignment: center;
                 }
-                Text {
-                    text: UiText.tr("App language");
-                    color: #f6f6fa;
-                    font-size: 16px;
-                    font-weight: 700;
-                    height: 27px;
-                }
-                Action {
-                    label: root.language-label == "System" ? UiText.tr("System") : root.language-label;
+                Rectangle { height: 1px; background: Theme.divider; }
+                SectionTitle { text: UiText.tr("General"); }
+                SettingRow {
+                    label: UiText.tr("App language");
+                    detail: root.language-label == "System" ? UiText.tr("System") : root.language-label;
+                    chevron: true;
                     pressed => { root.navigate(Screen.language); }
                 }
-                Action {
-                    label: root.thumbnails ? (UiText.tr("Thumbnails on"))
-                        : (UiText.tr("Thumbnails off"));
+                SettingRow {
+                    label: UiText.tr("Thumbnails");
+                    toggle: true;
+                    checked: root.thumbnails;
                     pressed => { root.toggle-thumbnails(); }
                 }
-                Text {
-                    text: UiText.tr("SponsorBlock & DeArrow");
-                    color: #f6f6fa;
-                    font-size: 16px;
-                    font-weight: 700;
-                    height: 28px;
-                }
-                Action {
-                    label: UiText.tr("Enable SponsorBlock") + (root.sponsorblock ? "  ✓" : "");
-                    selected: root.sponsorblock;
+                Rectangle { height: 1px; background: Theme.divider; }
+                SectionTitle { text: UiText.tr("SponsorBlock & DeArrow"); }
+                SettingRow {
+                    label: UiText.tr("Enable SponsorBlock");
+                    detail: UiText.tr("Skip sponsors, self-promotion and reminders");
+                    toggle: true;
+                    checked: root.sponsorblock;
                     pressed => { root.toggle-extra(0); }
                 }
-                Action {
-                    label: UiText.tr("DeArrow titles") + (root.dearrow-titles ? "  ✓" : "");
-                    selected: root.dearrow-titles;
+                SettingRow {
+                    label: UiText.tr("DeArrow titles");
+                    toggle: true;
+                    checked: root.dearrow-titles;
                     pressed => { root.toggle-extra(1); }
                 }
-                Action {
-                    label: UiText.tr("DeArrow thumbnails") + (root.dearrow-thumbnails ? "  ✓" : "");
-                    selected: root.dearrow-thumbnails;
+                SettingRow {
+                    label: UiText.tr("DeArrow thumbnails");
+                    toggle: true;
+                    checked: root.dearrow-thumbnails;
                     pressed => { root.toggle-extra(2); }
                 }
-                Action {
-                    label: UiText.tr("Return YouTube Dislike") + (root.dislike-count ? "  ✓" : "");
-                    selected: root.dislike-count;
+                SettingRow {
+                    label: UiText.tr("Return YouTube Dislike");
+                    toggle: true;
+                    checked: root.dislike-count;
                     pressed => { root.toggle-extra(3); }
                 }
-                Text {
-                    text: "Stream Tube " + root.app-version;
-                    color: #faf9fb;
-                    font-size: 16px;
-                    font-weight: 700;
-                    height: 28px;
-                }
-                Action {
+                Rectangle { height: 1px; background: Theme.divider; }
+                SectionTitle { text: UiText.tr("About"); }
+                SettingRow {
                     label: root.update-state == 1 ? UiText.tr("Checking for updates…")
                         : root.update-state == 3 ? UiText.tr("Update to") + " " + root.update-name
                         : root.update-state == 4 ? UiText.tr("Downloading update…") + " \{root.update-progress}%"
                         : root.update-state == 5 ? UiText.tr("Confirm the installation")
                         : root.update-state == 6 && root.update-name != "" ? UiText.tr("Try the update again")
                         : UiText.tr("Check for updates");
-                    accent: root.update-state == 3;
-                    active: root.update-state != 1 && root.update-state != 4 && root.update-state != 5;
+                    detail: root.update-state == 2 ? UiText.tr("Stream Tube is up to date")
+                        : root.update-state == 6 ? UiText.tr("Update failed") + ": " + root.update-error
+                        : "Stream Tube " + root.app-version;
                     pressed => {
                         if root.update-state == 3 || (root.update-state == 6 && root.update-name != "") {
                             root.install-update();
-                        } else {
+                        } else if root.update-state != 1 && root.update-state != 4 && root.update-state != 5 {
                             root.check-updates();
                         }
                     }
                 }
-                if root.update-state == 2 || root.update-state == 6: Text {
-                    text: root.update-state == 2 ? UiText.tr("Stream Tube is up to date")
-                        : UiText.tr("Update failed") + ": " + root.update-error;
-                    wrap: word-wrap;
-                    color: root.update-state == 6 ? #ff9cac : #c3c2ce;
-                    font-size: 13px;
-                }
-                Action {
+                SettingRow {
                     label: UiText.tr("Source code");
+                    chevron: true;
                     pressed => { root.open-source(); }
                 }
-                AboutSlint { height: 86px; }
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 12px;
+                    AboutSlint { height: 86px; }
+                }
             }
         }
 
@@ -808,166 +1422,487 @@ export component StreamTube inherits Window {
             }
         }
 
+        // the You tab
+        if root.screen == Screen.you: ScrollView {
+            vertical-stretch: 1;
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: 200ms; easing: ease-out; }
+            mouse-drag-pan-enabled: true;
+            viewport-height: you.preferred-height;
+            you := VerticalLayout {
+                padding-bottom: 24px;
+                HorizontalLayout {
+                    padding: 16px;
+                    spacing: 16px;
+                    height: 104px;
+                    Avatar {
+                        width: 72px;
+                        y: 0;
+                        initial: root.account-connected ? root.account-initial : "";
+                        background: root.account-connected ? #00897b : Theme.surface;
+                        if !root.account-connected: Symbol {
+                            width: 36px;
+                            height: 36px;
+                            glyph: Glyph.you;
+                            tint: Theme.secondary;
+                        }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 8px;
+                        Text {
+                            text: root.account-connected ? root.account-name : UiText.tr("Enjoy your favorite videos");
+                            color: Theme.text;
+                            font-size: 20px;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Pill {
+                                label: root.account-connected ? UiText.tr("Settings") : root.account-busy ? UiText.tr("Waiting for sign-in…") : UiText.tr("Sign in");
+                                primary: !root.account-connected;
+                                active: root.account-connected || !root.account-busy;
+                                pressed => {
+                                    if root.account-connected {
+                                        root.navigate(Screen.settings);
+                                    } else {
+                                        root.authorize-account();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.account-code != "": HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-bottom: 8px;
+                    SignInCode {
+                        code: root.account-code;
+                        open => { root.open-activation(); }
+                        cancel => { root.cancel-sign-in(); }
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 12px;
+                    SectionTitle { horizontal-stretch: 1; padding-left: 0px; text: UiText.tr("History"); }
+                    Pill {
+                        y: 4px;
+                        label: UiText.tr("View all");
+                        pressed => { root.history-mode = true; root.navigate(Screen.library); }
+                    }
+                }
+                if root.history-preview.length == 0: HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    height: 36px;
+                    Text {
+                        text: UiText.tr("Videos you watch will show up here");
+                        color: Theme.secondary;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                if root.history-preview.length > 0: Flickable {
+                    height: 158px;
+                    viewport-width: history-row.preferred-width;
+                    history-row := HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 10px;
+                        for item in root.history-preview: MiniCard {
+                            video: item;
+                            watch => { root.watch-preview(true, item.id); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 12px;
+                    SectionTitle { horizontal-stretch: 1; padding-left: 0px; text: UiText.tr("Watch later"); }
+                    Pill {
+                        y: 4px;
+                        label: UiText.tr("View all");
+                        pressed => { root.history-mode = false; root.navigate(Screen.library); }
+                    }
+                }
+                if root.saved-preview.length == 0: HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    height: 36px;
+                    Text {
+                        text: UiText.tr("Save videos from the More menu to watch them later");
+                        color: Theme.secondary;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                if root.saved-preview.length > 0: Flickable {
+                    height: 158px;
+                    viewport-width: saved-row.preferred-width;
+                    saved-row := HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 10px;
+                        for item in root.saved-preview: MiniCard {
+                            video: item;
+                            watch => { root.watch-preview(false, item.id); }
+                        }
+                    }
+                }
+                Rectangle { height: 8px; }
+                Rectangle { height: 1px; background: Theme.divider; }
+                SettingRow {
+                    label: UiText.tr("Settings");
+                    chevron: true;
+                    pressed => { root.navigate(Screen.settings); }
+                }
+                SettingRow {
+                    label: UiText.tr("Check for updates");
+                    detail: "Stream Tube " + root.app-version;
+                    pressed => { root.check-updates(); root.navigate(Screen.settings); }
+                }
+            }
+        }
+
         if root.showing-channels && root.channels.length > 0: ListView {
             vertical-stretch: 1;
             opacity: 0;
             init => { self.opacity = 1; }
             animate opacity { duration: 200ms; easing: ease-out; }
             mouse-drag-pan-enabled: true;
-            for channel in root.channels: Action {
-                height: 51px;
-                label: channel.name;
-                pressed => { root.open-channel(channel.id, channel.name); }
+            for channel in root.channels: Rectangle {
+                height: 64px;
+                background: channel-touch.pressed ? Theme.surface : transparent;
+                animate background { duration: 120ms; easing: ease-out; }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 16px;
+                    Avatar {
+                        width: 40px;
+                        y: (parent.height - self.height) / 2;
+                        source: channel.avatar;
+                        has-image: channel.has-avatar;
+                        initial: channel.initial;
+                    }
+                    Text {
+                        text: channel.name;
+                        color: Theme.text;
+                        font-size: 15px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                }
+                channel-touch := TouchArea { clicked => { root.open-channel(channel.id, channel.name); } }
             }
         }
 
-        if root.screen != Screen.settings && root.screen != Screen.language && root.videos.length == 0
+        // loading skeleton, empty and error states
+        if root.feed-screen && root.videos.length == 0 && root.busy
+            && (!root.showing-channels || root.channels.length == 0): Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            skeleton := SkeletonCard {
+                x: (parent.width - self.width) / 2;
+                y: 0px;
+                width: min(parent.width, 640px);
+            }
+            SkeletonCard {
+                x: skeleton.x;
+                y: skeleton.height + 8px;
+                width: skeleton.width;
+            }
+            SkeletonCard {
+                x: skeleton.x;
+                y: (skeleton.height + 8px) * 2;
+                width: skeleton.width;
+            }
+        }
+        if root.feed-screen && root.videos.length == 0 && !root.busy
             && (!root.showing-channels || root.channels.length == 0): VerticalLayout {
             vertical-stretch: 1;
-            padding-top: 11px;
-            spacing: 9px;
-            if root.busy: HorizontalLayout {
-                alignment: center;
-                height: 40px;
-                Spinner {
-                    width: 32px;
-                    height: 32px;
-                    indeterminate: true;
-                }
-            }
+            padding: 32px;
+            spacing: 14px;
+            alignment: start;
             Text {
                 text: UiText.tr(root.message);
-                color: #c3c2ce;
+                color: Theme.secondary;
                 font-size: 14px;
                 wrap: word-wrap;
-                horizontal-alignment: root.busy ? center : left;
+                horizontal-alignment: center;
             }
-            if root.failed: Action {
-                label: UiText.tr("Retry");
-                width: 105px;
-                height: 44px;
-                pressed => { root.reload(); }
+            if root.failed: HorizontalLayout {
+                alignment: center;
+                Pill {
+                    label: UiText.tr("Retry");
+                    pressed => { root.reload(); }
+                }
             }
-            Rectangle { vertical-stretch: 1; }
         }
 
-        if root.screen == Screen.shorts && root.videos.length > 0: Rectangle {
+        if root.screen == Screen.shorts: Rectangle {
             vertical-stretch: 1;
-            Action {
+            if root.videos.length > 0: Pill {
                 width: 220px;
-                height: 44px;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 label: UiText.tr("Watch Shorts");
-                accent: true;
+                primary: true;
                 pressed => { root.open-shorts(); }
+            }
+            if root.videos.length == 0 && root.busy: Spinner {
+                width: 36px;
+                height: 36px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                indeterminate: true;
+            }
+            if root.videos.length == 0 && !root.busy: Text {
+                x: 24px;
+                width: parent.width - 48px;
+                y: (parent.height - self.height) / 2;
+                text: UiText.tr(root.message);
+                color: Theme.secondary;
+                horizontal-alignment: center;
+                wrap: word-wrap;
             }
         }
 
-        if root.screen != Screen.settings && root.screen != Screen.shorts
-            && !root.showing-channels && root.videos.length > 0: list := ListView {
+        if root.feed-screen && !root.showing-channels && root.videos.length > 0: list := ListView {
             vertical-stretch: 1;
+            mouse-drag-pan-enabled: true;
+            viewport-y <=> root.feed-scroll;
             opacity: root.busy ? 0.35 : 1;
             animate opacity { duration: 220ms; easing: ease-out; }
-            mouse-drag-pan-enabled: true;
             scrolled => {
                 if root.has-more && !root.loading-more && !root.load-more-failed
                     && list.viewport-height + list.viewport-y < list.visible-height * 1.7 {
                     root.load-more();
                 }
             }
-            for video in root.videos: VideoCard {
-                width: min(list.visible-width, 560px);
-                x: max(0px, (list.visible-width - self.width) / 2);
-                video: video;
-                watch => { root.watch(video.id); }
-                save => { root.save(video.id); }
-                open-channel => { root.open-channel(video.channel-id, video.channel); }
+            for video in root.videos: Rectangle {
+                width: list.visible-width;
+                height: video.kind == 1 ? 352px : card.height + 8px;
+                if video.kind == 1: ShortsShelf {
+                    width: parent.width;
+                    shorts: root.shorts-shelf;
+                    watch(id) => { root.watch-short(id); }
+                }
+                card := VideoCard {
+                    visible: video.kind == 0;
+                    width: root.card-width;
+                    x: (parent.width - self.width) / 2;
+                    radius: root.wide ? 12px : 0px;
+                    video: video;
+                    watch => { root.watch(video.id); }
+                    menu => { root.menu-video = video; root.menu-open = true; }
+                    open-channel => { root.open-channel(video.channel-id, video.channel); }
+                }
             }
         }
 
-        if root.has-more && (root.loading-more || root.load-more-failed) && root.screen != Screen.shorts: Action {
-            label: root.loading-more ? (UiText.tr("Loading more videos…"))
-                : (UiText.tr("Retry loading more"));
-            active: !root.loading-more;
-            pressed => { root.load-more(); }
+        if root.feed-screen && root.has-more && (root.loading-more || root.load-more-failed): HorizontalLayout {
+            height: 52px;
+            alignment: center;
+            if root.loading-more: Spinner {
+                width: 28px;
+                height: 28px;
+                y: 12px;
+                indeterminate: true;
+            }
+            if root.load-more-failed: Pill {
+                y: 8px;
+                label: UiText.tr("Retry loading more");
+                pressed => { root.load-more(); }
+            }
         }
 
         if (root.update-state == 3 && !root.update-dismissed) || root.update-state == 4 || root.update-state == 5: Rectangle {
-            height: 52px;
-            border-radius: 9px;
-            background: #232429;
+            height: 56px;
+            background: Theme.raised;
             opacity: 0;
             init => { self.opacity = 1; }
             animate opacity { duration: 240ms; easing: ease-out; }
             HorizontalLayout {
-                padding: 4px;
-                padding-left: 12px;
+                padding-left: 16px;
+                padding-right: 8px;
                 spacing: 6px;
                 Text {
                     horizontal-stretch: 1;
                     text: root.update-state == 3 ? UiText.tr("Update available") + ": " + root.update-name
                         : root.update-state == 4 ? UiText.tr("Downloading update…") + " \{root.update-progress}%"
                         : UiText.tr("Confirm the installation");
-                    color: #f6f6fa;
+                    color: Theme.text;
                     font-size: 13px;
                     vertical-alignment: center;
                     overflow: elide;
                 }
-                if root.update-state == 3: Action {
-                    width: 84px;
+                if root.update-state == 3: Pill {
+                    y: 10px;
                     label: UiText.tr("Update");
-                    accent: true;
+                    primary: true;
                     pressed => { root.install-update(); }
                 }
-                if root.update-state == 3: Action {
-                    width: 44px;
-                    label: "✕";
+                if root.update-state == 3: IconButton {
+                    y: 8px;
+                    glyph: Glyph.close;
+                    icon-size: 18px;
                     description: UiText.tr("Later");
                     pressed => { root.update-dismissed = true; }
                 }
             }
         }
 
-        if root.notice != "": Text {
-            text: UiText.tr(root.notice);
-            color: #ff9cac;
-            font-size: 12px;
-            wrap: word-wrap;
-            height: 28px;
-        }
-
         Rectangle {
             height: 1px;
-            background: #2c2d35;
+            background: Theme.divider;
         }
 
         HorizontalLayout {
-            height: 53px;
-            spacing: 4px;
+            height: 56px;
             NavigationItem {
                 glyph: Glyph.home;
                 label: UiText.tr("Home");
-                selected: root.tab == Screen.home;
-                pressed => { content-focus.focus(); root.navigate(Screen.home); }
+                selected: root.tab == Screen.home && !root.auxiliary;
+                pressed => {
+                    content-focus.focus();
+                    if root.screen == Screen.home {
+                        root.feed-scroll = 0;
+                    }
+                    root.navigate(Screen.home);
+                }
             }
             NavigationItem {
                 glyph: Glyph.shorts;
                 label: UiText.tr("Shorts");
-                selected: root.tab == Screen.shorts;
+                selected: root.tab == Screen.shorts && !root.auxiliary;
                 pressed => { content-focus.focus(); root.navigate(Screen.shorts); }
             }
             NavigationItem {
                 glyph: Glyph.following;
                 label: UiText.tr("Subscriptions");
-                selected: root.tab == Screen.following;
-                pressed => { content-focus.focus(); root.navigate(Screen.following); }
+                selected: root.tab == Screen.following && !root.auxiliary;
+                pressed => {
+                    content-focus.focus();
+                    if root.screen == Screen.following {
+                        root.feed-scroll = 0;
+                    }
+                    root.navigate(Screen.following);
+                }
             }
             NavigationItem {
-                glyph: Glyph.library;
-                label: UiText.tr("Library");
-                selected: root.tab == Screen.library;
-                pressed => { content-focus.focus(); root.navigate(Screen.library); }
+                glyph: Glyph.you;
+                label: UiText.tr("You");
+                selected: root.tab == Screen.you && !root.auxiliary;
+                pressed => { content-focus.focus(); root.navigate(Screen.you); }
+            }
+        }
+    }
+
+    // snackbar for short notices
+    if root.notice != "" && !root.notice-hidden: Rectangle {
+        x: 12px;
+        width: root.width - 24px;
+        y: root.height - root.safe-area-insets.bottom - 57px - self.height - 12px;
+        height: 48px;
+        border-radius: 8px;
+        background: #323232;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #00000080;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 200ms; easing: ease-out; }
+        Text {
+            x: 16px;
+            width: parent.width - 32px;
+            text: UiText.tr(root.notice);
+            color: #ffffff;
+            font-size: 14px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        TouchArea { clicked => { root.notice-hidden = true; } }
+        Timer {
+            interval: 3500ms;
+            running: true;
+            triggered => { root.notice-hidden = true; }
+        }
+    }
+
+    // ⋮ action sheet
+    if root.menu-open: Rectangle {
+        width: root.width;
+        height: root.height;
+        background: #00000099;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 180ms; easing: ease-out; }
+        TouchArea { clicked => { root.menu-open = false; } }
+        sheet := Rectangle {
+            x: (parent.width - self.width) / 2;
+            width: min(parent.width, 560px);
+            height: sheet-items.preferred-height + root.safe-area-insets.bottom;
+            y: parent.height;
+            init => { self.y = parent.height - self.height; }
+            animate y { duration: 240ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
+            border-top-left-radius: 14px;
+            border-top-right-radius: 14px;
+            background: Theme.raised;
+            TouchArea { }
+            sheet-items := VerticalLayout {
+                padding-top: 8px;
+                padding-bottom: 12px;
+                alignment: start;
+                HorizontalLayout {
+                    alignment: center;
+                    height: 16px;
+                    Rectangle {
+                        width: 40px;
+                        height: 4px;
+                        y: 4px;
+                        border-radius: 2px;
+                        background: #717171;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    height: 40px;
+                    Text {
+                        text: root.menu-video.title;
+                        color: Theme.secondary;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                SheetRow {
+                    glyph: Glyph.bookmark;
+                    filled: root.menu-video.saved;
+                    label: root.menu-video.saved ? UiText.tr("Remove from Watch later") : UiText.tr("Save to Watch later");
+                    pressed => { root.save(root.menu-video.id); root.menu-open = false; }
+                }
+                if root.menu-video.channel-id != "": SheetRow {
+                    glyph: Glyph.channel;
+                    label: UiText.tr("Go to channel");
+                    pressed => {
+                        root.menu-open = false;
+                        root.open-channel(root.menu-video.channel-id, root.menu-video.channel);
+                    }
+                }
+                SheetRow {
+                    glyph: Glyph.block;
+                    label: UiText.tr("Not interested");
+                    pressed => { root.hide-video(root.menu-video.id); root.menu-open = false; }
+                }
             }
         }
     }

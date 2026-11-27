@@ -5,7 +5,33 @@ use serde::Serialize;
 mod android;
 
 #[cfg(target_os = "android")]
-pub use android::{append, describe, listen, open, set_extras, update_saved};
+pub use android::{
+    append, listen, open, set_comments, set_details, set_extras, set_following, set_stream,
+    update_saved,
+};
+
+/// Event kinds the Java player reports through `VideoPlayer.event(session, kind, id)`.
+pub mod event {
+    /// A video started; `id` is the video id.
+    pub const WATCHED: i32 = 0;
+    /// Toggle saved; `id` is the video id.
+    pub const SAVE: i32 = 1;
+    /// Open the channel; `id` is `videoId` or `videoId\nchannelId\nchannelName`.
+    pub const CHANNEL: i32 = 2;
+    pub const CLOSED: i32 = 3;
+    /// The queue ran out; load the next feed page.
+    pub const MORE: i32 = 4;
+    /// Resolve the HLS stream; `id` is the video id (sent again on retry).
+    pub const STREAM: i32 = 5;
+    /// Load a comment page; `id` is `videoId\ntoken`.
+    pub const COMMENTS: i32 = 7;
+    /// A related video replaced the current one; `id` is its JSON (`watch::Related`).
+    pub const RELATED: i32 = 8;
+    /// Toggle following; `id` is `channelId\nchannelName`.
+    pub const SUBSCRIBE: i32 = 9;
+    /// Ask whether a channel is followed; `id` is `channelId\nchannelName`.
+    pub const FOLLOWING: i32 = 10;
+}
 
 #[derive(Serialize)]
 struct Track<'a> {
@@ -52,7 +78,16 @@ pub fn append(_: i32, _: &str, _: bool, _: bool) {}
 pub fn update_saved(_: i32, _: &str, _: bool) {}
 
 #[cfg(not(target_os = "android"))]
-pub fn describe(_: i32, _: &str, _: &str) {}
+pub fn set_stream(_: i32, _: &str, _: &str) {}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_details(_: i32, _: &str, _: &str) {}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_comments(_: i32, _: &str, _: &str) {}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_following(_: i32, _: &str, _: bool) {}
 
 #[cfg(not(target_os = "android"))]
 pub fn set_extras(_: i32, _: &str, _: &str) {}

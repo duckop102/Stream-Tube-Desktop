@@ -238,7 +238,15 @@ fn parse_subscriptions(reply: &Value) -> Vec<Channel> {
             continue;
         }
         let name = tab.get("title").map(text).unwrap_or_default();
-        channels.push(Channel { id, name });
+        let avatar = tab
+            .pointer("/thumbnail/thumbnails")
+            .and_then(Value::as_array)
+            .and_then(|sizes| sizes.last())
+            .and_then(|size| size.get("url"))
+            .and_then(Value::as_str)
+            .map(|url| if let Some(rest) = url.strip_prefix("//") { format!("https://{rest}") } else { url.to_owned() })
+            .unwrap_or_default();
+        channels.push(Channel { id, name, avatar });
         if channels.len() == MAX_CHANNELS {
             break;
         }
@@ -343,8 +351,8 @@ mod tests {
         assert_eq!(
             channels,
             vec![
-                Channel { id: "UC0123456789abcdefghijkl".into(), name: "Old style".into() },
-                Channel { id: "UCabcdefghijklmnopqrstuv".into(), name: "New style".into() },
+                Channel { id: "UC0123456789abcdefghijkl".into(), name: "Old style".into(), avatar: String::new() },
+                Channel { id: "UCabcdefghijklmnopqrstuv".into(), name: "New style".into(), avatar: String::new() },
             ]
         );
     }

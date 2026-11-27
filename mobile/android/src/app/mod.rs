@@ -10,14 +10,14 @@ use crate::{
     },
     shared::i18n::{self, Language},
 };
-use slint::{ComponentHandle, Model, SharedPixelBuffer, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     rc::Rc,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicI32, AtomicU64, Ordering},
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -111,8 +111,14 @@ pub fn run() -> Result<(), slint::PlatformError> {
     window.set_account_available(true);
     let reconnect = library.connected_account;
     window.set_videos(Rc::new(VecModel::<VideoRow>::default()).into());
+    window.set_shorts_shelf(Rc::new(VecModel::<VideoRow>::default()).into());
+    window.set_history_preview(Rc::new(VecModel::<VideoRow>::default()).into());
+    window.set_saved_preview(Rc::new(VecModel::<VideoRow>::default()).into());
+    window.set_channels(Rc::new(VecModel::<ChannelRow>::default()).into());
+    window.set_suggestions(Rc::new(VecModel::<slint::SharedString>::default()).into());
+    window.set_recent_searches(Rc::new(VecModel::<slint::SharedString>::default()).into());
     if !storage_writable {
-        window.set_notice("Local library is unavailable".into());
+        notify(&window, "Local library is unavailable");
     }
 
     let state = Rc::new(RefCell::new(AppState {
@@ -149,7 +155,7 @@ fn bind_navigation(window: &StreamTube, state: &State) {
         if let Some(ui) = target.upgrade() {
             if matches!(
                 screen,
-                Screen::Home | Screen::Shorts | Screen::Following | Screen::Library
+                Screen::Home | Screen::Shorts | Screen::Following | Screen::You
             ) {
                 ui.set_tab(screen);
             }
@@ -210,14 +216,21 @@ fn bind_navigation(window: &StreamTube, state: &State) {
             return;
         }
         if input.contains("://") || input.starts_with("www.") {
-            ui.set_notice("Enter a YouTube video link".into());
+            notify(&ui, "Enter a YouTube video link");
             return;
         }
         ui.set_notice("".into());
         let query: String = input.chars().take(200).collect();
         app.borrow_mut().query = query.clone();
         edit_library(&ui, &app, |library| library.searched(query));
+        show_recent_searches(&ui, &app);
         reload(&ui, &app);
+    });
+
+    let target = window.as_weak();
+    window.on_query_changed(move |text| {
+        let Some(ui) = target.upgrade() else { return };
+        request_suggestions(&ui, text.to_string());
     });
 
     let (target, app) = (window.as_weak(), state.clone());
@@ -231,9 +244,11 @@ fn bind_navigation(window: &StreamTube, state: &State) {
             if ui.get_screen() != Screen::Channel {
                 state.return_from_channel = ui.get_screen();
             }
+            let avatar = channel_avatar(&ui, &state, &id);
             state.channel = Some(Channel {
                 id: id.to_string(),
                 name: name.to_string(),
+                avatar,
             });
         }
         ui.set_screen(Screen::Channel);
@@ -262,11 +277,60 @@ fn bind_videos(window: &StreamTube, state: &State) {
     });
 
     let (target, app) = (window.as_weak(), state.clone());
+    window.on_watch_short(move |id| {
+        let Some(ui) = target.upgrade() else { return };
+        let videos: Vec<Video> = ui.get_shorts_shelf().iter().map(video_from_row).collect();
+        if let Some(first) = videos.iter().position(|video| video.id == id.as_str()) {
+            open_player(&ui, &app, videos, first, true, false);
+        }
+    });
+
+    let (target, app) = (window.as_weak(), state.clone());
+    window.on_watch_preview(move |history, id| {
+        let Some(ui) = target.upgrade() else { return };
+        let videos = {
+            let state = app.borrow();
+            if history {
+                state.library.history.clone()
+            } else {
+                state.library.saved.clone()
+            }
+        };
+        if let Some(first) = videos.iter().position(|video| video.id == id.as_str()) {
+            let shorts = videos[first].short;
+            open_player(&ui, &app, videos, first, shorts, false);
+        }
+    });
+
+    let target = window.as_weak();
+    window.on_hide_video(move |id| {
+        let Some(ui) = target.upgrade() else { return };
+        if let Ok(mut hidden) = HIDDEN.lock() {
+            hidden.insert(id.to_string());
+        }
+        let model = ui.get_videos();
+        if let Some(index) = model.iter().position(|row| row.id == id) {
+            if let Some(rows) = model.as_any().downcast_ref::<VecModel<VideoRow>>() {
+                rows.remove(index);
+            }
+        }
+        notify(&ui, "Video removed from your feed");
+    });
+
+    let (target, app) = (window.as_weak(), state.clone());
     window.on_save(move |id| {
         let Some(ui) = target.upgrade() else { return };
         let video = find_video(&ui, &id);
         let Some(video) = video else { return };
-        save_video(&ui, &app, video);
+        let saved = save_video(&ui, &app, video);
+        notify(
+            &ui,
+            if saved {
+                "Saved to Watch later"
+            } else {
+                "Removed from Watch later"
+            },
+        );
     });
 
     let (target, app) = (window.as_weak(), state.clone());
@@ -298,8 +362,10 @@ fn bind_player(window: &StreamTube, state: &State) {
 
     let (target, app) = (window.as_weak(), state.clone());
     window.on_player_event(move |number, kind, id| {
+        use player::event;
         let Some(ui) = target.upgrade() else { return };
-        let (video, shorts) = {
+        let id = id.to_string();
+        let shorts = {
             let mut state = app.borrow_mut();
             let Some(playback) = state
                 .playback
@@ -308,39 +374,77 @@ fn bind_player(window: &StreamTube, state: &State) {
             else {
                 return;
             };
-            if kind == 3 {
+            let shorts = playback.shorts;
+            if kind == event::CLOSED {
                 state.playback = None;
                 return;
             }
-            (
-                playback
-                    .videos
-                    .iter()
-                    .find(|video| video.id == id.as_str())
-                    .cloned(),
-                playback.shorts,
-            )
+            shorts
         };
-        if kind == 4 {
-            if !load_more(&ui, &app) && !ui.get_loading_more() {
-                player::append(number, "[]", false, false);
+        match kind {
+            event::MORE => {
+                if !load_more(&ui, &app) && !ui.get_loading_more() {
+                    player::append(number, "[]", false, false);
+                }
+                return;
             }
-            return;
+            event::STREAM => {
+                load_stream(&ui, number, id);
+                return;
+            }
+            event::COMMENTS => {
+                if let Some((video, token)) = id.split_once('\n') {
+                    load_comments(&ui, number, video.to_owned(), token.to_owned());
+                }
+                return;
+            }
+            event::RELATED => {
+                add_related_video(&app, number, &id);
+                return;
+            }
+            event::SUBSCRIBE | event::FOLLOWING => {
+                if let Some(channel) = player_channel(&id) {
+                    let channel_id = channel.id.clone();
+                    let following = player_following(&ui, &app, channel, kind == event::SUBSCRIBE);
+                    player::set_following(number, &channel_id, following);
+                }
+                return;
+            }
+            _ => {}
         }
+        let (video_id, channel) = match id.split_once('\n') {
+            Some((video, channel)) => (video, player_channel(channel)),
+            None => (id.as_str(), None),
+        };
+        let video = app.borrow().playback.as_ref().and_then(|playback| {
+            playback
+                .videos
+                .iter()
+                .find(|video| video.id == video_id)
+                .cloned()
+        });
         let Some(video) = video else { return };
         match kind {
-            0 => {
+            event::WATCHED => {
                 edit_library(&ui, &app, |library| library.watched(video));
-                load_playback_extras(&ui, number, id.to_string(), app.borrow().library.extras);
+                load_playback_extras(
+                    &ui,
+                    number,
+                    video_id.to_owned(),
+                    app.borrow().library.extras,
+                );
                 if !shorts {
-                    load_video_description(&ui, number, id.to_string());
+                    load_video_description(&ui, number, video_id.to_owned());
                 }
             }
-            1 => {
+            event::SAVE => {
                 let saved = save_video(&ui, &app, video);
-                player::update_saved(number, &id, saved);
+                player::update_saved(number, video_id, saved);
             }
-            2 => ui.invoke_open_channel(video.channel.id.into(), video.channel.name.into()),
+            event::CHANNEL => {
+                let channel = channel.unwrap_or(video.channel);
+                ui.invoke_open_channel(channel.id.into(), channel.name.into());
+            }
             _ => {}
         }
     });
@@ -411,7 +515,7 @@ fn bind_settings(window: &StreamTube, state: &State) {
             )
             .is_err()
             {
-                ui.set_notice("Could not open the source".into());
+                notify(&ui, "Could not open the source");
             }
         }
     });
@@ -553,7 +657,7 @@ fn bind_account(window: &StreamTube, state: &State) {
         let Some(ui) = target.upgrade() else { return };
         let code = ui.get_account_code();
         if !code.is_empty() && rustferry::system::open_url(account::tv::activate_url(&code)).is_err() {
-            ui.set_notice("Open youtube.com/activate in a browser".into());
+            notify(&ui, "Open youtube.com/activate in a browser");
         }
     });
 
@@ -613,6 +717,7 @@ fn bind_account(window: &StreamTube, state: &State) {
                 .take(500)
                 .collect();
             edit_library(&ui, &app, |library| library.connected_account = true);
+            ui.set_account_initial(initial(&name).into());
             ui.set_account_name(name);
             ui.set_account_connected(true);
             ui.set_account_message("".into());
@@ -774,20 +879,28 @@ fn reload(ui: &StreamTube, state: &State) {
             } else {
                 state.library.saved.clone()
             })),
-            Screen::Search if !state.query.is_empty() => Some(Feed::Search(state.query.clone())),
+            Screen::Search if !state.query.is_empty() && !ui.get_search_editing() => {
+                Some(Feed::Search(state.query.clone()))
+            }
             Screen::Channel => state.channel.clone().map(Feed::Channel),
             Screen::Playlist => state.playlist.clone().map(Feed::Playlist),
             _ => None,
         };
         if screen == Screen::Following {
-            let channels = following_channels(&state)
-                .into_iter()
-                .map(|channel| ChannelRow {
-                    id: channel.id.clone().into(),
-                    name: channel.name.clone().into(),
-                })
+            let channels = following_channels(&state);
+            let urls = channels
+                .iter()
+                .map(|channel| channel.avatar.clone())
                 .collect::<Vec<_>>();
-            ui.set_channels(Rc::new(VecModel::from(channels)).into());
+            let rows = channels.iter().map(channel_row).collect::<Vec<_>>();
+            set_rows(&ui.get_channels(), rows);
+            if state.library.thumbnails {
+                load_images(ui, Vec::new(), urls, None, false, Extras::default());
+            }
+        }
+        if screen == Screen::You {
+            let thumbnails = state.library.thumbnails;
+            show_previews(ui, &state.library.history, &state.library.saved, thumbnails);
         }
         let empty = match screen {
             Screen::Following => "Open a channel under a video to follow it",
@@ -798,6 +911,21 @@ fn reload(ui: &StreamTube, state: &State) {
         };
         if let Some(Feed::Channel(channel)) = &feed {
             ui.set_channel_name(channel.name.clone().into());
+            ui.set_channel_initial(initial(&channel.name).into());
+            ui.set_channel_avatar_url(channel.avatar.clone().into());
+            match cached_avatar(&channel.avatar) {
+                Some(pixels) => {
+                    ui.set_channel_avatar(slint::Image::from_rgba8(pixels));
+                    ui.set_channel_has_avatar(true);
+                }
+                None => {
+                    ui.set_channel_has_avatar(false);
+                    if state.library.thumbnails && !channel.avatar.is_empty() {
+                        let urls = vec![channel.avatar.clone()];
+                        load_images(ui, Vec::new(), urls, None, false, Extras::default());
+                    }
+                }
+            }
             ui.set_channel_followed(state.library.is_following(&channel.id));
             ui.set_channel_remote(
                 state
@@ -809,13 +937,16 @@ fn reload(ui: &StreamTube, state: &State) {
         (feed, empty)
     };
 
+    if screen == Screen::Search {
+        show_recent_searches(ui, state);
+    }
     replace_rows(ui, Vec::new());
     ui.set_failed(false);
     ui.set_busy(false);
     ui.set_has_more(false);
     ui.set_loading_more(false);
     ui.set_load_more_failed(false);
-    ui.set_message(if screen == Screen::Settings {
+    ui.set_message(if matches!(screen, Screen::Settings | Screen::You) {
         "".into()
     } else {
         empty.into()
@@ -903,6 +1034,15 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
     let client = Client::new(language);
     let append = matches!(feed, Feed::Next(_));
     let shorts = matches!(feed, Feed::Shorts);
+    // the first page of the main Home feed gets a Shorts shelf, fetched alongside it
+    let shelf = if matches!(feed, Feed::ForYou(_) | Feed::Home(Category::All)) {
+        std::thread::Builder::new()
+            .name("stream-tube-shorts-shelf".into())
+            .spawn(move || Client::new(language).shorts())
+            .ok()
+    } else {
+        None
+    };
     let page = match feed {
         Feed::Home(category) => client.home(category).map(FeedPage::from),
         Feed::ForYou(interests) => interests.load(language).map(FeedPage::from),
@@ -917,12 +1057,18 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
             follow_feed(language, &channels, &request, generation)
         }
     };
-    let ids = page
+    let mut ids = page
         .iter()
         .flat_map(|page| &page.videos)
         .map(|video| video.id.clone())
         .collect::<Vec<_>>();
+    let mut avatars = page
+        .iter()
+        .flat_map(|page| &page.videos)
+        .map(|video| video.avatar.clone())
+        .collect::<Vec<_>>();
     let check = request.clone();
+    let shelf_saved = saved.clone();
     if target
         .upgrade_in_event_loop(move |ui| {
             if check.load(Ordering::Relaxed) != generation {
@@ -954,9 +1100,11 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
                     &ui,
                     page.videos
                         .iter()
+                        .filter(|video| !is_hidden(&video.id))
                         .map(|video| video_row(video, saved.contains(&video.id)))
                         .collect(),
                 );
+                set_rows(&ui.get_shorts_shelf(), Vec::new());
                 ui.set_busy(false);
                 if available && shorts {
                     ui.invoke_open_shorts();
@@ -965,54 +1113,283 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
         })
         .is_err()
         || shorts
-        || (!thumbnails && !extras.dearrow_titles)
     {
         return;
     }
 
-    let http = youtube::thumbnail_agent();
-    for id in ids {
-        if request.load(Ordering::Relaxed) != generation {
-            break;
+    if let Some(shelf) = shelf {
+        let videos = shelf
+            .join()
+            .ok()
+            .flatten()
+            .map(|page| page.videos)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|video| !is_hidden(&video.id))
+            .take(12)
+            .collect::<Vec<_>>();
+        if videos.len() >= 3 && request.load(Ordering::Relaxed) == generation {
+            ids.extend(videos.iter().map(|video| video.id.clone()));
+            let marks = videos
+                .iter()
+                .map(|video| shelf_saved.contains(&video.id))
+                .collect::<Vec<_>>();
+            let check = request.clone();
+            let _ = target.upgrade_in_event_loop(move |ui| {
+                if check.load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                let rows = videos
+                    .iter()
+                    .zip(marks)
+                    .map(|(video, saved)| video_row(video, saved))
+                    .collect::<Vec<_>>();
+                let model = ui.get_videos();
+                let Some(feed) = model.as_any().downcast_ref::<VecModel<VideoRow>>() else {
+                    return;
+                };
+                if feed.row_count() < 2 {
+                    return;
+                }
+                set_rows(&ui.get_shorts_shelf(), rows);
+                feed.insert(
+                    feed.row_count().min(3),
+                    VideoRow {
+                        id: SHELF_ID.into(),
+                        kind: 1,
+                        ..Default::default()
+                    },
+                );
+            });
         }
-        let branding = if extras.dearrow_titles || (thumbnails && extras.dearrow_thumbnails) {
-            services::branding(&id).unwrap_or_default()
-        } else {
-            services::Branding::default()
-        };
-        let alternate = branding
-            .thumbnail_time
-            .filter(|_| extras.dearrow_thumbnails)
-            .and_then(|time| services::branded_thumbnail(&id, time));
-        let rgba = thumbnails
-            .then(|| youtube::thumbnail(&http, &id, alternate))
-            .flatten();
-        let title = branding.title.filter(|_| extras.dearrow_titles);
-        if rgba.is_none() && title.is_none() {
+    }
+
+    if !thumbnails && !extras.dearrow_titles {
+        return;
+    }
+    if !thumbnails {
+        avatars.clear();
+    }
+    fetch_images(target, ids, avatars, Some((request, generation)), thumbnails, extras);
+}
+
+/// Placeholder row the feed shows as the Shorts shelf.
+const SHELF_ID: &str = "#shorts-shelf";
+
+/// Videos hidden with "Not interested" during this session.
+static HIDDEN: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+fn is_hidden(id: &str) -> bool {
+    HIDDEN.lock().is_ok_and(|hidden| hidden.contains(id))
+}
+
+/// Channel avatars already downloaded, by URL. They are small, so they stay for the session.
+static AVATARS: LazyLock<Mutex<HashMap<String, SharedPixelBuffer<Rgba8Pixel>>>> =
+    LazyLock::new(Mutex::default);
+
+fn cached_avatar(url: &str) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    if url.is_empty() {
+        return None;
+    }
+    AVATARS.lock().ok()?.get(url).cloned()
+}
+
+enum ImageJob {
+    Thumbnail(String),
+    Avatar(String),
+}
+
+fn load_images(
+    ui: &StreamTube,
+    ids: Vec<String>,
+    avatars: Vec<String>,
+    check: Option<(Arc<AtomicU64>, u64)>,
+    thumbnails: bool,
+    extras: Extras,
+) {
+    let target = ui.as_weak();
+    let _ = std::thread::Builder::new()
+        .name("stream-tube-images".into())
+        .spawn(move || fetch_images(target, ids, avatars, check, thumbnails, extras));
+}
+
+/// Downloads thumbnails (with DeArrow branding) and channel avatars on a few threads,
+/// and puts each picture into every list that shows it.
+fn fetch_images(
+    target: slint::Weak<StreamTube>,
+    ids: Vec<String>,
+    avatars: Vec<String>,
+    check: Option<(Arc<AtomicU64>, u64)>,
+    thumbnails: bool,
+    extras: Extras,
+) {
+    let mut seen = HashSet::new();
+    let mut jobs = Vec::new();
+    for url in avatars {
+        if url.is_empty() || !seen.insert(url.clone()) {
             continue;
         }
-        let check = request.clone();
-        let _ = target.upgrade_in_event_loop(move |ui| {
-            if check.load(Ordering::Relaxed) != generation {
-                return;
+        match cached_avatar(&url) {
+            Some(pixels) => {
+                let _ = target.upgrade_in_event_loop(move |ui| apply_avatar(&ui, &url, pixels));
             }
-            let model = ui.get_videos();
-            if let Some((index, mut row)) = model.iter().enumerate().find(|(_, row)| row.id == id) {
-                if let Some(rgba) = rgba {
-                    let pixels = SharedPixelBuffer::clone_from_slice(
-                        rgba.as_raw(),
-                        rgba.width(),
-                        rgba.height(),
-                    );
-                    row.thumbnail = slint::Image::from_rgba8(pixels);
-                    row.has_thumbnail = true;
+            None => jobs.push(ImageJob::Avatar(url)),
+        }
+    }
+    // interleave so the first cards get both their picture and their avatar early
+    let mut thumbs = ids
+        .into_iter()
+        .filter(|id| id != SHELF_ID && seen.insert(id.clone()))
+        .map(ImageJob::Thumbnail)
+        .collect::<Vec<_>>();
+    let avatar_jobs = std::mem::take(&mut jobs);
+    let mut avatar_jobs = avatar_jobs.into_iter();
+    for thumb in thumbs.drain(..) {
+        jobs.push(thumb);
+        if let Some(avatar) = avatar_jobs.next() {
+            jobs.push(avatar);
+        }
+    }
+    jobs.extend(avatar_jobs);
+
+    let current = || {
+        check
+            .as_ref()
+            .is_none_or(|(request, generation)| request.load(Ordering::Relaxed) == *generation)
+    };
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                let http = youtube::thumbnail_agent();
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(job) = jobs.get(index) else { break };
+                    if !current() {
+                        break;
+                    }
+                    match job {
+                        ImageJob::Avatar(url) => {
+                            let Some(rgba) = youtube::avatar(&http, url) else {
+                                continue;
+                            };
+                            let pixels = SharedPixelBuffer::clone_from_slice(
+                                rgba.as_raw(),
+                                rgba.width(),
+                                rgba.height(),
+                            );
+                            if let Ok(mut cache) = AVATARS.lock() {
+                                if cache.len() > 600 {
+                                    cache.clear();
+                                }
+                                cache.insert(url.clone(), pixels.clone());
+                            }
+                            let url = url.clone();
+                            let _ = target
+                                .upgrade_in_event_loop(move |ui| apply_avatar(&ui, &url, pixels));
+                        }
+                        ImageJob::Thumbnail(id) => {
+                            let branding = if extras.dearrow_titles
+                                || (thumbnails && extras.dearrow_thumbnails)
+                            {
+                                services::branding(id).unwrap_or_default()
+                            } else {
+                                services::Branding::default()
+                            };
+                            let alternate = branding
+                                .thumbnail_time
+                                .filter(|_| extras.dearrow_thumbnails)
+                                .and_then(|time| services::branded_thumbnail(id, time));
+                            let pixels = thumbnails
+                                .then(|| youtube::thumbnail(&http, id, alternate))
+                                .flatten()
+                                .map(|rgba| {
+                                    SharedPixelBuffer::clone_from_slice(
+                                        rgba.as_raw(),
+                                        rgba.width(),
+                                        rgba.height(),
+                                    )
+                                });
+                            let title = branding.title.filter(|_| extras.dearrow_titles);
+                            if pixels.is_none() && title.is_none() {
+                                continue;
+                            }
+                            let id = id.clone();
+                            let _ = target.upgrade_in_event_loop(move |ui| {
+                                apply_thumbnail(&ui, &id, pixels, title)
+                            });
+                        }
+                    }
                 }
-                if let Some(title) = title {
-                    row.title = title.into();
-                }
+            });
+        }
+    });
+}
+
+fn video_models(ui: &StreamTube) -> [ModelRc<VideoRow>; 4] {
+    [
+        ui.get_videos(),
+        ui.get_shorts_shelf(),
+        ui.get_history_preview(),
+        ui.get_saved_preview(),
+    ]
+}
+
+fn apply_thumbnail(
+    ui: &StreamTube,
+    id: &str,
+    pixels: Option<SharedPixelBuffer<Rgba8Pixel>>,
+    title: Option<String>,
+) {
+    let image = pixels.map(slint::Image::from_rgba8);
+    for model in video_models(ui) {
+        for index in 0..model.row_count() {
+            let Some(mut row) = model.row_data(index) else {
+                continue;
+            };
+            if row.id != id {
+                continue;
+            }
+            if let Some(image) = &image {
+                row.thumbnail = image.clone();
+                row.has_thumbnail = true;
+            }
+            if let Some(title) = &title {
+                row.title = title.into();
+            }
+            model.set_row_data(index, row);
+        }
+    }
+}
+
+fn apply_avatar(ui: &StreamTube, url: &str, pixels: SharedPixelBuffer<Rgba8Pixel>) {
+    let image = slint::Image::from_rgba8(pixels);
+    for model in video_models(ui) {
+        for index in 0..model.row_count() {
+            let Some(mut row) = model.row_data(index) else {
+                continue;
+            };
+            if row.avatar_url == url && !row.has_avatar {
+                row.avatar = image.clone();
+                row.has_avatar = true;
                 model.set_row_data(index, row);
             }
-        });
+        }
+    }
+    let channels = ui.get_channels();
+    for index in 0..channels.row_count() {
+        let Some(mut row) = channels.row_data(index) else {
+            continue;
+        };
+        if row.avatar_url == url && !row.has_avatar {
+            row.avatar = image.clone();
+            row.has_avatar = true;
+            channels.set_row_data(index, row);
+        }
+    }
+    if ui.get_channel_avatar_url() == url {
+        ui.set_channel_avatar(image);
+        ui.set_channel_has_avatar(true);
     }
 }
 
@@ -1053,8 +1430,11 @@ fn follow_feed(
 }
 
 fn replace_rows(ui: &StreamTube, rows: Vec<VideoRow>) {
-    let model = ui.get_videos();
-    if let Some(model) = model.as_any().downcast_ref::<VecModel<VideoRow>>() {
+    set_rows(&ui.get_videos(), rows);
+}
+
+fn set_rows<T: Clone + 'static>(model: &ModelRc<T>, rows: Vec<T>) {
+    if let Some(model) = model.as_any().downcast_ref::<VecModel<T>>() {
         model.set_vec(rows);
     }
 }
@@ -1067,6 +1447,7 @@ fn append_rows(ui: &StreamTube, videos: Vec<Video>, saved: &HashSet<String>) -> 
     let mut ids: HashSet<_> = model.iter().map(|row| row.id).collect();
     let new: Vec<_> = videos
         .into_iter()
+        .filter(|video| !is_hidden(&video.id))
         .filter_map(|video| {
             let row = video_row(&video, saved.contains(&video.id));
             ids.insert(row.id.clone()).then_some(row)
@@ -1078,6 +1459,7 @@ fn append_rows(ui: &StreamTube, videos: Vec<Video>, saved: &HashSet<String>) -> 
 }
 
 fn video_row(video: &Video, saved: bool) -> VideoRow {
+    let cached = cached_avatar(&video.avatar);
     VideoRow {
         id: video.id.clone().into(),
         title: video.title.clone().into(),
@@ -1088,19 +1470,141 @@ fn video_row(video: &Video, saved: bool) -> VideoRow {
         published: video.published.clone().into(),
         saved,
         short: video.short,
+        initial: initial(&video.channel.name).into(),
+        avatar_url: video.avatar.clone().into(),
+        avatar: cached
+            .clone()
+            .map(slint::Image::from_rgba8)
+            .unwrap_or_default(),
+        has_avatar: cached.is_some(),
         ..Default::default()
     }
+}
+
+fn channel_row(channel: &Channel) -> ChannelRow {
+    let cached = cached_avatar(&channel.avatar);
+    ChannelRow {
+        id: channel.id.clone().into(),
+        name: channel.name.clone().into(),
+        initial: initial(&channel.name).into(),
+        avatar_url: channel.avatar.clone().into(),
+        avatar: cached
+            .clone()
+            .map(slint::Image::from_rgba8)
+            .unwrap_or_default(),
+        has_avatar: cached.is_some(),
+    }
+}
+
+/// The first letter of a name, for the circle shown until a picture loads.
+fn initial(name: &str) -> String {
+    name.trim()
+        .trim_start_matches('@')
+        .chars()
+        .next()
+        .map(|letter| letter.to_uppercase().collect())
+        .unwrap_or_default()
+}
+
+/// The avatar of a channel as some list on screen knows it.
+fn channel_avatar(ui: &StreamTube, state: &AppState, id: &str) -> String {
+    ui.get_videos()
+        .iter()
+        .find(|row| row.channel_id == id && !row.avatar_url.is_empty())
+        .map(|row| row.avatar_url.to_string())
+        .or_else(|| {
+            following_channels(state)
+                .into_iter()
+                .find(|channel| channel.id == id && !channel.avatar.is_empty())
+                .map(|channel| channel.avatar)
+        })
+        .unwrap_or_default()
+}
+
+fn show_previews(ui: &StreamTube, history: &[Video], saved: &[Video], thumbnails: bool) {
+    let mut ids = Vec::new();
+    let mut avatars = Vec::new();
+    let mut rows = |videos: &[Video]| {
+        videos
+            .iter()
+            .take(12)
+            .map(|video| {
+                ids.push(video.id.clone());
+                avatars.push(video.avatar.clone());
+                video_row(video, false)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (history, saved) = (rows(history), rows(saved));
+    set_rows(&ui.get_history_preview(), history);
+    set_rows(&ui.get_saved_preview(), saved);
+    if thumbnails {
+        load_images(ui, ids, avatars, None, true, Extras::default());
+    }
+}
+
+fn show_recent_searches(ui: &StreamTube, state: &State) {
+    let recent = state
+        .borrow()
+        .library
+        .recent_searches
+        .iter()
+        .map(|query| slint::SharedString::from(query.as_str()))
+        .collect::<Vec<_>>();
+    set_rows(&ui.get_recent_searches(), recent);
+}
+
+/// Latest text typed in the search box; older suggestion requests give up.
+static SUGGESTION_REQUEST: AtomicU64 = AtomicU64::new(0);
+
+fn request_suggestions(ui: &StreamTube, text: String) {
+    let request = SUGGESTION_REQUEST.fetch_add(1, Ordering::SeqCst) + 1;
+    if text.trim().is_empty() {
+        set_rows(&ui.get_suggestions(), Vec::new());
+        return;
+    }
+    let language = current_language(ui);
+    let target = ui.as_weak();
+    let _ = std::thread::Builder::new()
+        .name("stream-tube-suggestions".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(160));
+            if SUGGESTION_REQUEST.load(Ordering::SeqCst) != request {
+                return;
+            }
+            let mut found = youtube::suggestions(&text, language);
+            if found.is_empty() {
+                found.push(text.trim().to_owned());
+            }
+            let _ = target.upgrade_in_event_loop(move |ui| {
+                if SUGGESTION_REQUEST.load(Ordering::SeqCst) != request {
+                    return;
+                }
+                let rows = found.into_iter().map(slint::SharedString::from).collect();
+                set_rows(&ui.get_suggestions(), rows);
+            });
+        });
+}
+
+/// Shows a short message in the snackbar, again even when the text repeats.
+fn notify(ui: &StreamTube, text: &str) {
+    ui.set_notice(text.into());
+    ui.set_notice_hidden(false);
 }
 
 fn find_video(ui: &StreamTube, id: &str) -> Option<Video> {
     ui.get_videos()
         .iter()
-        .find(|row| row.id == id)
+        .find(|row| row.kind == 0 && row.id == id)
         .map(video_from_row)
 }
 
 fn feed_videos(ui: &StreamTube) -> Vec<Video> {
-    ui.get_videos().iter().map(video_from_row).collect()
+    ui.get_videos()
+        .iter()
+        .filter(|row| row.kind == 0)
+        .map(video_from_row)
+        .collect()
 }
 
 fn video_from_row(row: VideoRow) -> Video {
@@ -1110,11 +1614,13 @@ fn video_from_row(row: VideoRow) -> Video {
         channel: Channel {
             id: row.channel_id.to_string(),
             name: row.channel.to_string(),
+            avatar: row.avatar_url.to_string(),
         },
         duration: row.duration.to_string(),
         views: row.views.to_string(),
         published: row.published.to_string(),
         short: row.short,
+        avatar: row.avatar_url.to_string(),
     }
 }
 
@@ -1151,7 +1657,7 @@ fn open_player(
     .is_err()
     {
         state.borrow_mut().playback = None;
-        ui.set_notice("Could not open the player".into());
+        notify(&ui, "Could not open the player");
     }
 }
 
@@ -1161,11 +1667,12 @@ fn load_video_description(ui: &StreamTube, number: i32, id: String) {
     let _ = std::thread::Builder::new()
         .name("stream-tube-video-details".into())
         .spawn(move || {
-            if let Some(description) = Client::new(language).description(&id) {
-                let _ = target.upgrade_in_event_loop(move |_| {
-                    player::describe(number, &id, &description);
-                });
-            }
+            let packet = youtube::watch::details(&id, language)
+                .and_then(|details| serde_json::to_string(&details).ok())
+                .unwrap_or_else(|| r#"{"error":true}"#.to_owned());
+            let _ = target.upgrade_in_event_loop(move |_| {
+                player::set_details(number, &id, &packet);
+            });
         });
 }
 
@@ -1184,6 +1691,102 @@ fn load_playback_extras(ui: &StreamTube, number: i32, id: String, settings: Extr
                 });
             }
         });
+}
+
+fn load_stream(ui: &StreamTube, number: i32, id: String) {
+    let language = current_language(ui);
+    let target = ui.as_weak();
+    let _ = std::thread::Builder::new()
+        .name("stream-tube-stream".into())
+        .spawn(move || {
+            let packet = match youtube::watch::stream(&id, language) {
+                Ok(stream) => serde_json::to_string(&stream).unwrap_or_default(),
+                Err(error) => serde_json::json!({ "error": error }).to_string(),
+            };
+            let _ = target.upgrade_in_event_loop(move |_| {
+                player::set_stream(number, &id, &packet);
+            });
+        });
+}
+
+fn load_comments(ui: &StreamTube, number: i32, id: String, token: String) {
+    let language = current_language(ui);
+    let target = ui.as_weak();
+    let _ = std::thread::Builder::new()
+        .name("stream-tube-comments".into())
+        .spawn(move || {
+            let page = youtube::watch::comments(&token, language);
+            let packet = youtube::watch::comments_packet(&token, page.as_ref());
+            let _ = target.upgrade_in_event_loop(move |_| {
+                player::set_comments(number, &id, &packet);
+            });
+        });
+}
+
+/// A related video the watch page started: it joins the playback so saving,
+/// history and the channel link work for it like for queue videos.
+fn add_related_video(state: &State, number: i32, packet: &str) {
+    let Some(video) = serde_json::from_str::<youtube::watch::Related>(packet)
+        .ok()
+        .and_then(youtube::watch::Related::into_video)
+    else {
+        return;
+    };
+    let saved = {
+        let mut state = state.borrow_mut();
+        let state = &mut *state;
+        let saved = state.library.is_saved(&video.id);
+        let Some(playback) = state
+            .playback
+            .as_mut()
+            .filter(|player| player.number == number)
+        else {
+            return;
+        };
+        if !playback.videos.iter().any(|known| known.id == video.id) {
+            playback.videos.push(video.clone());
+        }
+        saved
+    };
+    player::update_saved(number, &video.id, saved);
+}
+
+/// `channelId\nchannelName` from the player.
+fn player_channel(packet: &str) -> Option<Channel> {
+    let (id, name) = packet.split_once('\n').unwrap_or((packet, ""));
+    youtube::is_channel_id(id).then(|| Channel {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        ..Channel::default()
+    })
+}
+
+/// Whether the channel is followed, after toggling it when asked. Channels the
+/// connected account subscribes to are followed through the account and stay so.
+fn player_following(ui: &StreamTube, state: &State, channel: Channel, toggle: bool) -> bool {
+    let id = channel.id.clone();
+    if state
+        .borrow()
+        .account_channels
+        .iter()
+        .any(|remote| remote.id == id)
+    {
+        return true;
+    }
+    if toggle {
+        edit_library(ui, state, |library| library.toggle_following(channel));
+    }
+    let following = state.borrow().library.is_following(&id);
+    if toggle
+        && state
+            .borrow()
+            .channel
+            .as_ref()
+            .is_some_and(|open| open.id == id)
+    {
+        ui.set_channel_followed(following);
+    }
+    following
 }
 
 fn save_video(ui: &StreamTube, state: &State, video: Video) -> bool {
@@ -1212,7 +1815,7 @@ fn edit_library(ui: &StreamTube, state: &State, edit: impl FnOnce(&mut Library))
     let mut updated = state.library.clone();
     edit(&mut updated);
     if !state.storage_writable || updated.write().is_err() {
-        ui.set_notice("Could not save changes".into());
+        notify(&ui, "Could not save changes");
         return;
     }
     state.library = updated;

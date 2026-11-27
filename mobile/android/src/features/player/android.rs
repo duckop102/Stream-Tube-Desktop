@@ -86,32 +86,50 @@ pub fn update_saved(session: i32, id: &str, saved: bool) {
     });
 }
 
-pub fn describe(session: i32, id: &str, description: &str) {
+pub fn set_extras(session: i32, id: &str, packet: &str) {
+    send_packet(jni_str!("setExtras"), session, id, packet);
+}
+
+/// `{"url","agent","live","duration"}` or `{"error"}` for the video `id`.
+pub fn set_stream(session: i32, id: &str, packet: &str) {
+    send_packet(jni_str!("setStream"), session, id, packet);
+}
+
+/// The watch page details (see `youtube::watch::Details`) for the video `id`.
+pub fn set_details(session: i32, id: &str, packet: &str) {
+    send_packet(jni_str!("setDetails"), session, id, packet);
+}
+
+/// A comment page (see `youtube::watch::comments_packet`) for the video `id`.
+pub fn set_comments(session: i32, id: &str, packet: &str) {
+    send_packet(jni_str!("setComments"), session, id, packet);
+}
+
+pub fn set_following(session: i32, channel: &str, following: bool) {
     let _ = with_application_class(CLASS, |env, activity, class| {
-        let id = env.new_string(id)?;
-        let description = env.new_string(description)?;
+        let channel = env.new_string(channel)?;
         env.call_static_method(
             class,
-            jni_str!("describe"),
-            jni_sig!("(Landroid/app/Activity;ILjava/lang/String;Ljava/lang/String;)V"),
+            jni_str!("setFollowing"),
+            jni_sig!("(Landroid/app/Activity;ILjava/lang/String;Z)V"),
             &[
                 JValue::Object(activity),
                 JValue::Int(session),
-                JValue::Object(&id),
-                JValue::Object(&description),
+                JValue::Object(&channel),
+                JValue::Bool(following),
             ],
         )?;
         Ok(())
     });
 }
 
-pub fn set_extras(session: i32, id: &str, packet: &str) {
+fn send_packet(method: &'static jni::strings::JNIStr, session: i32, id: &str, packet: &str) {
     let _ = with_application_class(CLASS, |env, activity, class| {
         let id = env.new_string(id)?;
         let packet = env.new_string(packet)?;
         env.call_static_method(
             class,
-            jni_str!("setExtras"),
+            method,
             jni_sig!("(Landroid/app/Activity;ILjava/lang/String;Ljava/lang/String;)V"),
             &[
                 JValue::Object(activity),

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub struct Channel {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub avatar: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,4 +17,7 @@ pub struct Video {
     pub views: String,
     pub published: String,
     pub short: bool,
+    /// The channel's avatar image URL, when the feed provides one.
+    #[serde(default)]
+    pub avatar: String,
 }
