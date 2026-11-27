@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$CargoFerry = 'cargo-ferry',
-    [string]$Gradle = 'gradle'
+    [string]$Gradle = 'gradle',
+    # CI passes a build number so every published APK can update the one before it.
+    [int]$VersionCode = 0,
+    [string]$VersionName = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +37,13 @@ $gradleManifest.DocumentElement.RemoveAttribute('package')
 $app = $gradleManifest.SelectSingleNode('/manifest/application')
 $app.RemoveAttribute('debuggable', $androidNamespace)
 $app.RemoveAttribute('extractNativeLibs', $androidNamespace)
+# In-app updates hand the downloaded APK to PackageInstaller.
+$installPermission = 'android.permission.REQUEST_INSTALL_PACKAGES'
+if (-not $gradleManifest.SelectSingleNode("/manifest/uses-permission[@*[local-name()='name']='$installPermission']")) {
+    $permission = $gradleManifest.CreateElement('uses-permission')
+    $permission.SetAttribute('name', $androidNamespace, $installPermission) | Out-Null
+    $gradleManifest.DocumentElement.InsertBefore($permission, $app) | Out-Null
+}
 $gradleManifest.Save((Join-Path $inputs 'AndroidManifest.xml'))
 
 $metadata = cargo metadata --manifest-path (Join-Path $mobile 'Cargo.toml') --locked --filter-platform aarch64-linux-android --format-version 1 | ConvertFrom-Json
@@ -56,8 +66,8 @@ $version = & $aapt dump badging $base | Select-String "^package:"
 if ($LASTEXITCODE -ne 0 -or "$version" -notmatch "versionCode='(\d+)' versionName='([^']+)'") {
     throw 'Could not read the Android version from the RustFerry APK.'
 }
-$versionCode = $Matches[1]
-$versionName = $Matches[2]
+$versionCode = if ($VersionCode -gt 0) { $VersionCode } else { $Matches[1] }
+$versionName = if ($VersionName) { $VersionName } else { $Matches[2] }
 $gradleArguments = @(
     '--no-daemon', '--project-dir', $googleProject, "--project-cache-dir=$inputs/gradle-cache",
     "-PferryInputs=$inputs", "-PferryGenerated=$generated", "-PslintJava=$slintJava",
@@ -73,10 +83,16 @@ $release = Join-Path $inputs "Stream-Tube-Android-$versionName.apk"
 & $align -P 16 -f 4 $unsigned $aligned
 if ($LASTEXITCODE -ne 0) { throw 'APK alignment failed.' }
 
-$identity = Join-Path $env:APPDATA 'cargo-ferry/android'
-$keystore = Join-Path $identity 'debug.keystore'
-$passwordFile = Join-Path $identity 'debug-keystore.pass'
-& $signer sign --ks $keystore --ks-pass "file:$passwordFile" --ks-key-alias rustferrydebugkey --out $release $aligned
+if ($env:STREAMTUBE_KEYSTORE) {
+    # Release identity: every update must be signed with the same key to install over the last one.
+    & $signer sign --ks $env:STREAMTUBE_KEYSTORE --ks-pass env:STREAMTUBE_KEYSTORE_PASSWORD `
+        --ks-key-alias $env:STREAMTUBE_KEY_ALIAS --key-pass env:STREAMTUBE_KEYSTORE_PASSWORD --out $release $aligned
+} else {
+    $identity = Join-Path $env:APPDATA 'cargo-ferry/android'
+    $keystore = Join-Path $identity 'debug.keystore'
+    $passwordFile = Join-Path $identity 'debug-keystore.pass'
+    & $signer sign --ks $keystore --ks-pass "file:$passwordFile" --ks-key-alias rustferrydebugkey --out $release $aligned
+}
 if ($LASTEXITCODE -ne 0) { throw 'APK signing failed.' }
 & $signer verify --verbose --print-certs $release
 if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed.' }

@@ -26,7 +26,8 @@ android {
                 new File(ferryGenerated, 'java'),
                 slintJava,
                 '../src/features/player/ui',
-                '../src/features/account/ui'
+                '../src/features/account/ui',
+                '../src/features/updater/ui'
             )
             jniLibs.srcDir new File(ferryInputs, 'jniLibs')
         }

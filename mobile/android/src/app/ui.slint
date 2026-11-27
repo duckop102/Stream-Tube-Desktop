@@ -360,6 +360,13 @@ export component StreamTube inherits Window {
     in property <bool> account-busy;
     in property <string> account-name;
     in property <string> account-message;
+    in property <string> app-version;
+    // 0 idle, 1 checking, 2 up to date, 3 available, 4 downloading, 5 confirming, 6 failed
+    in property <int> update-state;
+    in property <string> update-name;
+    in property <int> update-progress;
+    in property <string> update-error;
+    in-out property <bool> update-dismissed;
     in-out property <string> search-query;
     in-out property <int> category: 0;
     in-out property <bool> history-mode: false;
@@ -390,6 +397,8 @@ export component StreamTube inherits Window {
     callback refresh-account;
     callback disconnect-account;
     callback account-result(int, int, string, string);
+    callback check-updates;
+    callback install-update;
 
     content-focus := FocusScope {
         width: 0px;
@@ -664,11 +673,35 @@ export component StreamTube inherits Window {
                     pressed => { root.toggle-extra(3); }
                 }
                 Text {
-                    text: "Stream Tube 0.1.0";
+                    text: "Stream Tube " + root.app-version;
                     color: #faf9fb;
                     font-size: 16px;
                     font-weight: 700;
                     height: 28px;
+                }
+                Action {
+                    label: root.update-state == 1 ? UiText.tr("Checking for updates…")
+                        : root.update-state == 3 ? UiText.tr("Update to") + " " + root.update-name
+                        : root.update-state == 4 ? UiText.tr("Downloading update…") + " \{root.update-progress}%"
+                        : root.update-state == 5 ? UiText.tr("Confirm the installation")
+                        : root.update-state == 6 && root.update-name != "" ? UiText.tr("Try the update again")
+                        : UiText.tr("Check for updates");
+                    accent: root.update-state == 3;
+                    active: root.update-state != 1 && root.update-state != 4 && root.update-state != 5;
+                    pressed => {
+                        if root.update-state == 3 || (root.update-state == 6 && root.update-name != "") {
+                            root.install-update();
+                        } else {
+                            root.check-updates();
+                        }
+                    }
+                }
+                if root.update-state == 2 || root.update-state == 6: Text {
+                    text: root.update-state == 2 ? UiText.tr("Stream Tube is up to date")
+                        : UiText.tr("Update failed") + ": " + root.update-error;
+                    wrap: word-wrap;
+                    color: root.update-state == 6 ? #ff9cac : #c3c2ce;
+                    font-size: 13px;
                 }
                 Action {
                     label: UiText.tr("Source code");
@@ -756,6 +789,39 @@ export component StreamTube inherits Window {
                 : (UiText.tr("Retry loading more"));
             active: !root.loading-more;
             pressed => { root.load-more(); }
+        }
+
+        if (root.update-state == 3 && !root.update-dismissed) || root.update-state == 4 || root.update-state == 5: Rectangle {
+            height: 52px;
+            border-radius: 9px;
+            background: #232429;
+            HorizontalLayout {
+                padding: 4px;
+                padding-left: 12px;
+                spacing: 6px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.update-state == 3 ? UiText.tr("Update available") + ": " + root.update-name
+                        : root.update-state == 4 ? UiText.tr("Downloading update…") + " \{root.update-progress}%"
+                        : UiText.tr("Confirm the installation");
+                    color: #f6f6fa;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.update-state == 3: Action {
+                    width: 84px;
+                    label: UiText.tr("Update");
+                    accent: true;
+                    pressed => { root.install-update(); }
+                }
+                if root.update-state == 3: Action {
+                    width: 44px;
+                    label: "✕";
+                    description: UiText.tr("Later");
+                    pressed => { root.update-dismissed = true; }
+                }
+            }
         }
 
         if root.notice != "": Text {

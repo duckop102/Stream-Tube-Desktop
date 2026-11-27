@@ -5,6 +5,7 @@ use crate::{
         library::Library,
         player,
         services::{self, Extras},
+        updater,
         youtube::{self, Category, Client, Cursor, Interests, Page},
     },
     shared::i18n::{self, Language},
@@ -133,6 +134,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     bind_player(&window, &state);
     bind_settings(&window, &state);
     bind_account(&window, &state);
+    bind_updates(&window);
     reload(&window, &state);
     if reconnect && window.get_account_available() {
         authorize(&window, &state, false, false);
@@ -425,6 +427,106 @@ fn bind_settings(window: &StreamTube, state: &State) {
         });
         apply_extras(&ui, app.borrow().library.extras);
     });
+}
+
+const UPDATE_IDLE: i32 = 0;
+const UPDATE_CHECKING: i32 = 1;
+const UPDATE_CURRENT: i32 = 2;
+const UPDATE_AVAILABLE: i32 = 3;
+const UPDATE_DOWNLOADING: i32 = 4;
+const UPDATE_CONFIRM: i32 = 5;
+const UPDATE_FAILED: i32 = 6;
+
+/// The release found by the last check, waiting for the user to install it.
+static PENDING_UPDATE: Mutex<Option<updater::Release>> = Mutex::new(None);
+
+fn bind_updates(window: &StreamTube) {
+    window.set_app_version(updater::version_name().into());
+
+    let target = window.as_weak();
+    updater::listen(move |status, progress, message| {
+        let _ = target.upgrade_in_event_loop(move |ui| match status {
+            updater::status::PROGRESS => {
+                ui.set_update_state(UPDATE_DOWNLOADING);
+                ui.set_update_progress(progress);
+            }
+            updater::status::CONFIRM => ui.set_update_state(UPDATE_CONFIRM),
+            updater::status::INSTALLED => ui.set_update_state(UPDATE_IDLE),
+            _ => {
+                ui.set_update_error(message.into());
+                ui.set_update_state(UPDATE_FAILED);
+            }
+        });
+    });
+
+    let target = window.as_weak();
+    window.on_check_updates(move || {
+        if let Some(ui) = target.upgrade() {
+            check_updates(&ui, true);
+        }
+    });
+
+    let target = window.as_weak();
+    window.on_install_update(move || {
+        let Some(ui) = target.upgrade() else { return };
+        let Some(release) = pending_update() else {
+            check_updates(&ui, true);
+            return;
+        };
+        ui.set_update_progress(0);
+        ui.set_update_state(UPDATE_DOWNLOADING);
+        if !updater::install(&release) {
+            ui.set_update_error("The installer is unavailable".into());
+            ui.set_update_state(UPDATE_FAILED);
+        }
+    });
+
+    check_updates(window, false);
+}
+
+fn pending_update() -> Option<updater::Release> {
+    PENDING_UPDATE.lock().ok().and_then(|update| update.clone())
+}
+
+/// Looks for a newer build. The startup check waits a few seconds so the first feed
+/// loads first, and stays quiet when it fails.
+fn check_updates(ui: &StreamTube, manual: bool) {
+    let busy = [UPDATE_CHECKING, UPDATE_DOWNLOADING, UPDATE_CONFIRM];
+    if busy.contains(&ui.get_update_state()) {
+        return;
+    }
+    let current = updater::version_code();
+    if current == 0 && !manual {
+        return;
+    }
+    if manual {
+        ui.set_update_state(UPDATE_CHECKING);
+    }
+    let target = ui.as_weak();
+    let _ = std::thread::Builder::new()
+        .name("stream-tube-update-check".into())
+        .spawn(move || {
+            if !manual {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            let result = updater::check(current);
+            let _ = target.upgrade_in_event_loop(move |ui| match result {
+                Ok(Some(release)) => {
+                    ui.set_update_name(release.name.clone().into());
+                    if let Ok(mut pending) = PENDING_UPDATE.lock() {
+                        *pending = Some(release);
+                    }
+                    ui.set_update_dismissed(false);
+                    ui.set_update_state(UPDATE_AVAILABLE);
+                }
+                Ok(None) => ui.set_update_state(if manual { UPDATE_CURRENT } else { UPDATE_IDLE }),
+                Err(error) if manual => {
+                    ui.set_update_error(error.into());
+                    ui.set_update_state(UPDATE_FAILED);
+                }
+                Err(_) => ui.set_update_state(UPDATE_IDLE),
+            });
+        });
 }
 
 fn apply_extras(ui: &StreamTube, settings: Extras) {

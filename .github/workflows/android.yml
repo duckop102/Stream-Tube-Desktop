@@ -1,0 +1,158 @@
+name: Android release
+
+# Builds the Android app, signs it with this fork's release key and publishes it as a
+# release tagged android-<versionCode>. Installed copies find that release and update
+# themselves (mobile/android/src/features/updater).
+#
+# Pushes that touch the Android app build at once. Once a day the job also merges the
+# upstream project's main branch into a working copy (nothing is pushed) and builds a
+# new release when the Android sources changed since the last one.
+
+on:
+  push:
+    branches: [main]
+    paths: ["mobile/android/**", ".github/workflows/android.yml"]
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: Avaneesh-Inamdar/Stream-Tube-Desktop
+  # keeps every CI build above the version code of a local RustFerry build
+  VERSION_CODE_BASE: "10000"
+  # the repository installed copies look for updates in
+  STREAMTUBE_UPDATE_REPO: ${{ github.repository }}
+
+jobs:
+  android:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream changes
+        id: source
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$env:UPSTREAM.git"
+          git fetch --quiet upstream main
+          git merge --no-edit upstream/main
+          if ($LASTEXITCODE -ne 0) { throw "Upstream changes conflict with this fork. Merge upstream/main by hand." }
+          $tree = git rev-parse HEAD:mobile/android
+          $last = gh release list --limit 50 --json tagName --jq '[.[] | select(.tagName | startswith("android-"))][0].tagName'
+          $previous = ''
+          if ($last) {
+            $body = gh release view $last --json body --jq .body
+            if ("$body" -match 'android-tree: ([0-9a-f]+)') { $previous = $Matches[1] }
+          }
+          $build = if ($env:EVENT -ne 'schedule' -or $tree -ne $previous) { 'true' } else { 'false' }
+          Write-Host "Android tree $tree, last release $last ($previous), build: $build"
+          "build=$build" >> $env:GITHUB_OUTPUT
+          "tree=$tree" >> $env:GITHUB_OUTPUT
+          "upstream=$(git rev-parse upstream/main)" >> $env:GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.source.outputs.build == 'true'
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.source.outputs.build == 'true'
+        with:
+          workspaces: mobile/android
+
+      - uses: actions/setup-java@v4
+        if: steps.source.outputs.build == 'true'
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.source.outputs.build == 'true'
+        with:
+          gradle-version: "8.14.3"
+
+      - name: Android SDK and NDK 29
+        if: steps.source.outputs.build == 'true'
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
+          $ndk = & $sdkmanager --list 2>$null |
+            Select-String -Pattern '^\s*ndk;(29\.[0-9.]+)\s' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value } |
+            Sort-Object { [version]$_ } -Unique | Select-Object -Last 1
+          if (-not $ndk) { throw 'sdkmanager offers no NDK 29' }
+          (1..20 | ForEach-Object { 'y' }) | & $sdkmanager --licenses | Out-Null
+          & $sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;$ndk" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'sdkmanager failed' }
+          "ANDROID_NDK_HOME=$env:ANDROID_HOME\ndk\$ndk" >> $env:GITHUB_ENV
+          "ANDROID_SDK_ROOT=$env:ANDROID_HOME" >> $env:GITHUB_ENV
+
+      - name: Install cargo-ferry
+        if: steps.source.outputs.build == 'true'
+        run: cargo install cargo-ferry --version 0.1.0 --locked
+
+      - name: Test
+        if: steps.source.outputs.build == 'true'
+        working-directory: mobile/android
+        run: cargo test --locked --lib
+
+      - name: Build and sign the APK
+        if: steps.source.outputs.build == 'true'
+        id: apk
+        shell: pwsh
+        working-directory: mobile/android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STREAMTUBE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          STREAMTUBE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if (-not $env:KEYSTORE_BASE64) { throw 'Run mobile/android/tools/setup-android-release.ps1 to add the signing secrets.' }
+          $keystore = Join-Path $env:RUNNER_TEMP 'release.jks'
+          [IO.File]::WriteAllBytes($keystore, [Convert]::FromBase64String($env:KEYSTORE_BASE64))
+          $env:STREAMTUBE_KEYSTORE = $keystore
+          $base = (Select-String -Path ferry.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $code = [int]$env:VERSION_CODE_BASE + [int]$env:GITHUB_RUN_NUMBER
+          $name = "$base-b$env:GITHUB_RUN_NUMBER"
+          ./tools/build-account-apk.ps1 -VersionCode $code -VersionName $name
+          $apk = Get-Item "target/google-play/Stream-Tube-Android-$name.apk"
+          Remove-Item -LiteralPath $keystore
+          "path=$($apk.FullName)" >> $env:GITHUB_OUTPUT
+          "code=$code" >> $env:GITHUB_OUTPUT
+          "name=$name" >> $env:GITHUB_OUTPUT
+
+      - name: Publish the release
+        if: steps.source.outputs.build == 'true'
+        shell: pwsh
+        run: |
+          $notes = @"
+          Android build $env:NAME, version code $env:CODE.
+
+          Built from $env:GITHUB_SHA merged with upstream $env:UPSTREAM_SHA.
+          Installed copies offer this update on their next start.
+
+          android-tree: $env:TREE
+          "@
+          gh release create "android-$env:CODE" "$env:APK" --target $env:GITHUB_SHA `
+            --title "Stream Tube Android $env:NAME" --notes $notes --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the release' }
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK: ${{ steps.apk.outputs.path }}
+          CODE: ${{ steps.apk.outputs.code }}
+          NAME: ${{ steps.apk.outputs.name }}
+          TREE: ${{ steps.source.outputs.tree }}
+          UPSTREAM_SHA: ${{ steps.source.outputs.upstream }}
