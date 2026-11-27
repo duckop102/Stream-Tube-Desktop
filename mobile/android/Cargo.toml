@@ -26,7 +26,14 @@ url = "2.5"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
-slint = { version = "=1.17.1", default-features = false, features = ["backend-android-activity-06", "renderer-skia"] }
+slint = { version = "=1.17.1", default-features = false, features = ["backend-android-activity-06"] }
+
+# Skia ships prebuilt binaries for 64-bit Android only; 32-bit ARM phones draw with FemtoVG.
+[target.'cfg(all(target_os = "android", not(target_arch = "arm")))'.dependencies]
+slint = { version = "=1.17.1", default-features = false, features = ["renderer-skia"] }
+
+[target.'cfg(all(target_os = "android", target_arch = "arm"))'.dependencies]
+slint = { version = "=1.17.1", default-features = false, features = ["renderer-femtovg"] }
 
 [build-dependencies]
 slint-build = "=1.17.1"

@@ -137,6 +137,14 @@ jobs:
           "code=$code" >> $env:GITHUB_OUTPUT
           "name=$name" >> $env:GITHUB_OUTPUT
 
+      # kept with the run, so a failed publish can still be released by hand
+      - uses: actions/upload-artifact@v4
+        if: steps.source.outputs.build == 'true'
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          retention-days: 14
+
       - name: Publish the release
         if: steps.source.outputs.build == 'true'
         shell: pwsh
