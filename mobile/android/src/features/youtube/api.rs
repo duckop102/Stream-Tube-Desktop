@@ -694,15 +694,7 @@ pub fn avatar(http: &ureq::Agent, url: &str) -> Option<RgbaImage> {
     if parsed.scheme() != "https" || !(host.ends_with(".ggpht.com") || host.ends_with(".ytimg.com") || host.ends_with(".googleusercontent.com")) {
         return None;
     }
-    let bytes = http
-        .get(url)
-        .call()
-        .ok()?
-        .body_mut()
-        .with_config()
-        .limit(256 * 1024)
-        .read_to_vec()
-        .ok()?;
+    let bytes = download_image(http, url)?;
     let mut reader = ImageReader::new(ImageCursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(1024);
@@ -714,7 +706,8 @@ pub fn avatar(http: &ureq::Agent, url: &str) -> Option<RgbaImage> {
 }
 
 pub fn thumbnail_agent() -> ureq::Agent {
-    agent(Duration::from_secs(3))
+    // 3 s dropped every picture on a slow phone connection; a picture that is late still helps
+    agent(Duration::from_secs(12))
 }
 
 fn agent(timeout: Duration) -> ureq::Agent {
@@ -736,16 +729,32 @@ pub fn thumbnail(http: &ureq::Agent, id: &str, alternate: Option<Url>) -> Option
     read_thumbnail(http, &format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"))
 }
 
-fn read_thumbnail(http: &ureq::Agent, url: &str) -> Option<RgbaImage> {
-    let bytes = http
+/// Why the last picture download failed, for the notice when none of a feed's pictures load.
+static IMAGE_ERROR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+pub fn last_image_error() -> String {
+    IMAGE_ERROR.lock().map(|error| error.clone()).unwrap_or_default()
+}
+
+fn download_image(http: &ureq::Agent, url: &str) -> Option<Vec<u8>> {
+    let outcome = http
         .get(url)
         .call()
-        .ok()?
-        .body_mut()
-        .with_config()
-        .limit(256 * 1024)
-        .read_to_vec()
-        .ok()?;
+        .and_then(|mut response| response.body_mut().with_config().limit(256 * 1024).read_to_vec());
+    match outcome {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            let host = Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_owned));
+            if let Ok(mut last) = IMAGE_ERROR.lock() {
+                *last = format!("{}: {error}", host.unwrap_or_default());
+            }
+            None
+        }
+    }
+}
+
+fn read_thumbnail(http: &ureq::Agent, url: &str) -> Option<RgbaImage> {
+    let bytes = download_image(http, url)?;
     let mut reader = ImageReader::with_format(ImageCursor::new(bytes), ImageFormat::Jpeg);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(1920);

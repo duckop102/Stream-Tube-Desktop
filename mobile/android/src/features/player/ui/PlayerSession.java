@@ -78,6 +78,9 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     final ExoPlayer player;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable tick = this::tick;
+    // when the video has wanted to play without playing, to say so after a while
+    private long waitingSince;
+    private boolean stallReported;
     private final Runnable hideChrome = () -> setChromeVisible(false);
     private final FrameLayout root;
     private final FrameLayout videoBox;
@@ -348,6 +351,8 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             player.setMediaSource(source, resumeAt);
         }
         player.setPlaybackSpeed(speed);
+        waitingSince = 0;
+        stallReported = false;
         player.prepare();
         player.setPlayWhenReady(true);
     }
@@ -448,6 +453,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             shortsProgress.setTimes(position, buffered, duration);
         }
         skipSegments(position, duration);
+        reportStall(position, buffered);
         handler.postDelayed(tick, 250);
     }
 
@@ -472,10 +478,39 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     }
 
     private void showNote(String message) {
+        showNote(message, 2200);
+    }
+
+    private void showNote(String message, long millis) {
         note.setText(message);
         note.setVisibility(View.VISIBLE);
         handler.removeCallbacks(hideNote);
-        handler.postDelayed(hideNote, 2200);
+        handler.postDelayed(hideNote, millis);
+    }
+
+    /** A video that should play but has not for 15 s gets a note with what the player is doing. */
+    private void reportStall(long position, long buffered) {
+        int state = player.getPlaybackState();
+        boolean waiting = player.getPlayWhenReady() && !player.isPlaying()
+            && state != Player.STATE_ENDED && errorBox.getVisibility() != View.VISIBLE;
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (!waiting) {
+            waitingSince = 0;
+            return;
+        }
+        if (waitingSince == 0) {
+            waitingSince = now;
+            return;
+        }
+        if (stallReported || now - waitingSince < 15000) {
+            return;
+        }
+        stallReported = true;
+        String[] names = {"", "idle", "buffering", "ready", "ended"};
+        String name = state >= 0 && state < names.length ? names[state] : String.valueOf(state);
+        VideoSize size = player.getVideoSize();
+        showNote(text("Still loading") + ": " + name + ", " + position / 1000 + "s/" + buffered / 1000
+            + "s, " + size.width + "x" + size.height, 8000);
     }
 
     private final Runnable hideNote = this::hideNote;

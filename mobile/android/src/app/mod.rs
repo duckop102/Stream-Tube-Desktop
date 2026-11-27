@@ -508,6 +508,24 @@ fn bind_settings(window: &StreamTube, state: &State) {
     });
 
     let target = window.as_weak();
+    window.on_check_network(move || {
+        let Some(ui) = target.upgrade() else { return };
+        ui.set_network_busy(true);
+        ui.set_network_report("".into());
+        let language = current_language(&ui);
+        let target = ui.as_weak();
+        let _ = std::thread::Builder::new()
+            .name("stream-tube-network-check".into())
+            .spawn(move || {
+                let report = youtube::diagnose::report(language);
+                let _ = target.upgrade_in_event_loop(move |ui| {
+                    ui.set_network_busy(false);
+                    ui.set_network_report(report.into());
+                });
+            });
+    });
+
+    let target = window.as_weak();
     window.on_open_source(move || {
         if let Some(ui) = target.upgrade() {
             if rustferry::system::open_url(
@@ -1265,6 +1283,7 @@ fn fetch_images(
             .is_none_or(|(request, generation)| request.load(Ordering::Relaxed) == *generation)
     };
     let next = AtomicUsize::new(0);
+    let (loaded, missed) = (AtomicUsize::new(0), AtomicUsize::new(0));
     std::thread::scope(|scope| {
         for _ in 0..4 {
             scope.spawn(|| {
@@ -1309,7 +1328,12 @@ fn fetch_images(
                                 .and_then(|time| services::branded_thumbnail(id, time));
                             let pixels = thumbnails
                                 .then(|| youtube::thumbnail(&http, id, alternate))
-                                .flatten()
+                                .flatten();
+                            if thumbnails {
+                                let counter = if pixels.is_some() { &loaded } else { &missed };
+                                counter.fetch_add(1, Ordering::Relaxed);
+                            }
+                            let pixels = pixels
                                 .map(|rgba| {
                                     SharedPixelBuffer::clone_from_slice(
                                         rgba.as_raw(),
@@ -1331,6 +1355,14 @@ fn fetch_images(
             });
         }
     });
+    // say why when none of a feed's pictures arrived, so a screenshot shows the cause
+    let (loaded, missed) = (loaded.into_inner(), missed.into_inner());
+    if check.is_some() && loaded == 0 && missed >= 3 && current() {
+        let error = youtube::last_image_error();
+        let _ = target.upgrade_in_event_loop(move |ui| {
+            notify(&ui, &format!("Thumbnails did not load ({missed}): {error}"));
+        });
+    }
 }
 
 fn video_models(ui: &StreamTube) -> [ModelRc<VideoRow>; 4] {

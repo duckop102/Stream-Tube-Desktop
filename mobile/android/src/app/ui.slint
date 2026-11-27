@@ -888,6 +888,10 @@ export component StreamTube inherits Window {
     callback follow;
     callback choose-language(int);
     callback toggle-thumbnails;
+    // Settings → Network check
+    callback check-network;
+    in property <bool> network-busy;
+    in property <string> network-report;
     callback toggle-extra(int);
     callback open-source;
     callback authorize-account;
@@ -1408,6 +1412,22 @@ export component StreamTube inherits Window {
                         } else if root.update-state != 1 && root.update-state != 4 && root.update-state != 5 {
                             root.check-updates();
                         }
+                    }
+                }
+                SettingRow {
+                    label: root.network-busy ? UiText.tr("Checking the network…") : UiText.tr("Network check");
+                    detail: UiText.tr("Test thumbnails and video loading on this phone");
+                    pressed => { if !root.network-busy { root.check-network(); } }
+                }
+                if root.network-report != "": Rectangle {
+                    height: report-text.preferred-height + 16px;
+                    report-text := Text {
+                        x: 16px;
+                        width: parent.width - 32px;
+                        text: root.network-report;
+                        color: Theme.secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
                 }
                 SettingRow {
