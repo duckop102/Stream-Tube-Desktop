@@ -105,6 +105,9 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     private TextView shortsTitle;
     private TextView shortsChannel;
     private TextView shortsSave;
+    private ImageView shortsSaveIcon;
+    private TextView shortsInitial;
+    private ImageView shortsAvatar;
     private TimeBar shortsProgress;
 
     int index;
@@ -301,7 +304,11 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         if (shorts) {
             shortsTitle.setText(track.title);
             shortsChannel.setText(track.channel);
-            shortsChannel.setVisibility(track.channel.isEmpty() ? View.GONE : View.VISIBLE);
+            View owner = (View) shortsChannel.getParent();
+            owner.setVisibility(track.channel.isEmpty() ? View.GONE : View.VISIBLE);
+            String name = track.channel.replaceFirst("^@", "").trim();
+            shortsInitial.setText(name.isEmpty() ? "" : name.substring(0, name.offsetByCodePoints(0, 1)).toUpperCase());
+            RemoteImages.load(shortsAvatar, track.avatar, dp(32));
             shortsProgress.setTimes(0, 0, 0);
             videoBox.setContentDescription(track.title);
         } else {
@@ -580,7 +587,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         }
         if (shortsSave != null) {
             shortsSave.setText(saved ? text("Saved") : text("Save"));
-            shortsSave.setCompoundDrawablesRelative(icon(saved ? PlayerIcons.SAVED : PlayerIcons.SAVE, 20), null, null, null);
+            shortsSaveIcon.setImageDrawable(PlayerIcons.of(saved ? PlayerIcons.SAVED : PlayerIcons.SAVE, Color.WHITE));
         }
     }
 
@@ -1028,39 +1035,94 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         backParams.setMargins(dp(4), dp(28), 0, 0);
         videoBox.addView(back, backParams);
 
+        // as on YouTube: channel and title at the bottom left, actions in a column on the right
+        View shade = new View(activity);
+        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
+            new int[]{0xB3000000, 0x00000000}));
+        videoBox.addView(shade, new FrameLayout.LayoutParams(-1, dp(240), Gravity.BOTTOM));
+
         LinearLayout info = new LinearLayout(activity);
         info.setOrientation(LinearLayout.VERTICAL);
-        info.setPadding(dp(14), dp(40), dp(14), dp(24));
-        info.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
-            new int[]{0xCC000000, 0x00000000}));
+        info.setPadding(dp(14), 0, dp(80), dp(22));
+        LinearLayout owner = new LinearLayout(activity);
+        owner.setGravity(Gravity.CENTER_VERTICAL);
+        owner.setOnClickListener(view -> openChannel("", ""));
+        FrameLayout picture = new FrameLayout(activity);
+        GradientDrawable oval = new GradientDrawable();
+        oval.setShape(GradientDrawable.OVAL);
+        oval.setColor(0xFF3F3F3F);
+        picture.setBackground(oval);
+        picture.setOutlineProvider(android.view.ViewOutlineProvider.BACKGROUND);
+        picture.setClipToOutline(true);
+        shortsInitial = label("", 14, Color.WHITE);
+        shortsInitial.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        shortsInitial.setGravity(Gravity.CENTER);
+        picture.addView(shortsInitial, new FrameLayout.LayoutParams(-1, -1));
+        shortsAvatar = new ImageView(activity);
+        shortsAvatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        picture.addView(shortsAvatar, new FrameLayout.LayoutParams(-1, -1));
+        owner.addView(picture, new LinearLayout.LayoutParams(dp(32), dp(32)));
         shortsChannel = label("", 14, Color.WHITE);
-        shortsChannel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        shortsChannel.setOnClickListener(view -> openChannel("", ""));
-        info.addView(shortsChannel, new LinearLayout.LayoutParams(-2, -2));
-        shortsTitle = label("", 14, Color.WHITE);
+        shortsChannel.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        shortsChannel.setSingleLine(true);
+        shortsChannel.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams channelParams = new LinearLayout.LayoutParams(-2, -2);
+        channelParams.setMarginStart(dp(10));
+        owner.addView(shortsChannel, channelParams);
+        info.addView(owner, new LinearLayout.LayoutParams(-2, dp(40)));
+        shortsTitle = label("", 15, Color.WHITE);
         shortsTitle.setMaxLines(2);
         shortsTitle.setEllipsize(TextUtils.TruncateAt.END);
+        shortsTitle.setShadowLayer(dp(2), 0, 0, 0x80000000);
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, -2);
-        titleParams.topMargin = dp(6);
+        titleParams.topMargin = dp(8);
         info.addView(shortsTitle, titleParams);
-        LinearLayout actions = new LinearLayout(activity);
-        shortsSave = pill(text("Save"), PlayerIcons.SAVE, 20);
-        shortsSave.setOnClickListener(view -> save());
-        actions.addView(shortsSave, new LinearLayout.LayoutParams(-2, dp(36)));
-        TextView share = pill(text("Share"), PlayerIcons.SHARE, 20);
-        share.setOnClickListener(view -> share());
-        LinearLayout.LayoutParams shareParams = new LinearLayout.LayoutParams(-2, dp(36));
-        shareParams.setMarginStart(dp(8));
-        actions.addView(share, shareParams);
-        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-2, -2);
-        actionParams.topMargin = dp(12);
-        info.addView(actions, actionParams);
         videoBox.addView(info, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+
+        LinearLayout column = new LinearLayout(activity);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setGravity(Gravity.CENTER_HORIZONTAL);
+        column.setPadding(0, 0, 0, dp(24));
+        shortsSaveIcon = new ImageView(activity);
+        shortsSave = label(text("Save"), 12, Color.WHITE);
+        column.addView(shortsAction(shortsSaveIcon, PlayerIcons.SAVE, shortsSave, view -> save()));
+        ImageView shareIcon = new ImageView(activity);
+        TextView share = label(text("Share"), 12, Color.WHITE);
+        View shareAction = shortsAction(shareIcon, PlayerIcons.SHARE, share, view -> share());
+        LinearLayout.LayoutParams shareParams = new LinearLayout.LayoutParams(-2, -2);
+        shareParams.topMargin = dp(18);
+        column.addView(shareAction, shareParams);
+        FrameLayout.LayoutParams columnParams = new FrameLayout.LayoutParams(dp(72), -2, Gravity.BOTTOM | Gravity.END);
+        columnParams.setMarginEnd(dp(4));
+        videoBox.addView(column, columnParams);
 
         shortsProgress = new TimeBar(activity);
         shortsProgress.setExpanded(false);
         shortsProgress.setAlignBottom(true);
         videoBox.addView(shortsProgress, new FrameLayout.LayoutParams(-1, dp(2), Gravity.BOTTOM));
+    }
+
+    /** A round button with its label underneath, for the Shorts action column. */
+    private View shortsAction(ImageView icon, String path, TextView label, View.OnClickListener action) {
+        LinearLayout item = new LinearLayout(activity);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER_HORIZONTAL);
+        item.setOnClickListener(action);
+        item.setContentDescription(label.getText());
+        icon.setImageDrawable(PlayerIcons.of(path, Color.WHITE));
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        icon.setPadding(dp(11), dp(11), dp(11), dp(11));
+        GradientDrawable oval = new GradientDrawable();
+        oval.setShape(GradientDrawable.OVAL);
+        oval.setColor(0x40FFFFFF);
+        icon.setBackground(new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x40FFFFFF), oval, null));
+        item.addView(icon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        label.setGravity(Gravity.CENTER);
+        label.setShadowLayer(dp(2), 0, 0, 0x80000000);
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(-2, -2);
+        labelParams.topMargin = dp(4);
+        item.addView(label, labelParams);
+        return item;
     }
 
     // ───────────── view helpers (shared with WatchPage) ─────────────
@@ -1308,6 +1370,10 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             int state = player.getPlaybackState();
             boolean ended = state == Player.STATE_ENDED;
             boolean playing = player.getPlayWhenReady() && state != Player.STATE_IDLE && !ended;
+            int centre = errorBox.getVisibility() == View.VISIBLE ? View.INVISIBLE : View.VISIBLE;
+            play.setVisibility(centre);
+            previous.setVisibility(centre);
+            next.setVisibility(centre);
             play.setImageDrawable(PlayerIcons.of(ended ? PlayerIcons.REPLAY : playing ? PlayerIcons.PAUSE : PlayerIcons.PLAY, TEXT));
             play.setContentDescription(text(playing ? "Pause" : "Play"));
             previous.setAlpha(index > 0 ? 1f : 0.4f);
@@ -1433,7 +1499,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
                 childHeight = height;
                 childWidth = Math.round(height * aspect);
             }
-            if (fill && aspect < 0.8f && width > 0 && height > 0) {
+            if (fill && aspect < 0.8f && width > 0 && width < height * 0.8f) {
                 childWidth = Math.max(width, Math.round(height * aspect));
                 childHeight = Math.round(childWidth / aspect);
             }

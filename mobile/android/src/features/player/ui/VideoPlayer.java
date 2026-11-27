@@ -147,6 +147,7 @@ public final class VideoPlayer {
         final String title;
         final String channel;
         final boolean channelLink;
+        final String avatar;
         boolean saved;
 
         Track(JSONObject item) throws JSONException {
@@ -154,6 +155,7 @@ public final class VideoPlayer {
             title = item.getString("title");
             channel = item.getString("channel");
             channelLink = item.getBoolean("channel_link");
+            avatar = item.optString("avatar", "");
             saved = item.getBoolean("saved");
         }
 
@@ -163,6 +165,7 @@ public final class VideoPlayer {
             this.title = title;
             this.channel = channel;
             this.channelLink = channelLink;
+            this.avatar = "";
         }
     }
 

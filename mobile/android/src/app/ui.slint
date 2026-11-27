@@ -962,6 +962,7 @@ export component StreamTube inherits Window {
     callback reload;
     callback load-more;
     callback page-appended(bool);
+    callback shorts-page-ready;
     callback open-shorts;
     callback player-event(int, int, string);
     callback submit(string);
@@ -1160,7 +1161,6 @@ export component StreamTube inherits Window {
                     selected: root.screen == Screen.following;
                     pressed => {
                         content-focus.focus();
-                        root.feed-scroll = 0;
                         root.navigate(Screen.following);
                     }
                 }
@@ -1904,10 +1904,12 @@ export component StreamTube inherits Window {
                 selected: root.tab == Screen.home && !root.auxiliary;
                 pressed => {
                     content-focus.focus();
-                    if root.screen == Screen.home {
+                    // as on YouTube: a scrolled Home goes back to the top, a Home at the top refreshes
+                    if root.screen == Screen.home && root.feed-scroll < -1px {
                         root.feed-scroll = 0;
+                    } else {
+                        root.navigate(Screen.home);
                     }
-                    root.navigate(Screen.home);
                 }
             }
             NavigationItem {

@@ -17,7 +17,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, LazyLock, Mutex,
-        atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -39,6 +39,20 @@ struct AppState {
     playback: Option<Playback>,
     account_request: i32,
     account_channels: Vec<Channel>,
+    /// Home as it was left for another screen; coming back shows it again.
+    home_snapshot: Option<HomeSnapshot>,
+}
+
+/// The Home feed and its next page, kept while another screen is open.
+struct HomeSnapshot {
+    rows: Vec<VideoRow>,
+    shelf: Vec<VideoRow>,
+    next: Option<FeedCursor>,
+    has_more: bool,
+    category: i32,
+    language: &'static str,
+    account: bool,
+    at: std::time::Instant,
 }
 
 struct Playback {
@@ -46,6 +60,18 @@ struct Playback {
     feed_generation: Option<u64>,
     shorts: bool,
     videos: Vec<Video>,
+    /// Shorts opened from a shelf go on with the account's own run of Shorts.
+    run: Option<ShortsRun>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ShortsRun {
+    /// The run has not been fetched yet.
+    Start,
+    /// The next page of the run.
+    Next(String),
+    /// A page is on its way.
+    Loading,
 }
 
 enum Feed {
@@ -161,6 +187,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         playback: None,
         account_request: 0,
         account_channels: Vec::new(),
+        home_snapshot: None,
     }));
     bind_navigation(&window, &state);
     bind_videos(&window, &state);
@@ -179,6 +206,10 @@ fn bind_navigation(window: &StreamTube, state: &State) {
     let (target, app) = (window.as_weak(), state.clone());
     window.on_navigate(move |screen| {
         if let Some(ui) = target.upgrade() {
+            if ui.get_screen() != screen {
+                keep_home(&ui, &app);
+                ui.set_feed_scroll(0.0);
+            }
             if matches!(
                 screen,
                 Screen::Home | Screen::Shorts | Screen::Following | Screen::You
@@ -237,6 +268,7 @@ fn bind_navigation(window: &StreamTube, state: &State) {
         }
         if let Some(playlist) = youtube::playlist_id(input) {
             app.borrow_mut().playlist = Some(playlist);
+            keep_home(&ui, &app);
             ui.set_screen(Screen::Playlist);
             reload(&ui, &app);
             return;
@@ -277,6 +309,7 @@ fn bind_navigation(window: &StreamTube, state: &State) {
                 avatar,
             });
         }
+        keep_home(&ui, &app);
         ui.set_screen(Screen::Channel);
         reload(&ui, &app);
     });
@@ -307,7 +340,12 @@ fn bind_videos(window: &StreamTube, state: &State) {
         let Some(ui) = target.upgrade() else { return };
         let videos: Vec<Video> = ui.get_shorts_shelf().iter().map(video_from_row).collect();
         if let Some(first) = videos.iter().position(|video| video.id == id.as_str()) {
-            open_player(&ui, &app, videos, first, true, false);
+            let account = {
+                let state = app.borrow();
+                state.library.connected_account && account::tv::saved_token().is_some()
+            };
+            let run = account.then_some(ShortsRun::Start);
+            open_player_with(&ui, &app, videos, first, true, false, run);
         }
     });
 
@@ -409,6 +447,9 @@ fn bind_player(window: &StreamTube, state: &State) {
         };
         match kind {
             event::MORE => {
+                if more_shorts(&ui, &app, number) {
+                    return;
+                }
                 if !load_more(&ui, &app) && !ui.get_loading_more() {
                     player::append(number, "[]", false, false);
                 }
@@ -481,6 +522,9 @@ fn bind_player(window: &StreamTube, state: &State) {
             load_more(&ui, &app);
         }
     });
+
+    let app = state.clone();
+    window.on_shorts_page_ready(move || deliver_shorts(&app));
 
     let (target, app) = (window.as_weak(), state.clone());
     window.on_page_appended(move |failed| {
@@ -727,6 +771,7 @@ fn bind_account(window: &StreamTube, state: &State) {
             state.account_request = state.account_request.wrapping_add(1);
             ACCOUNT_REQUEST.store(state.account_request, Ordering::SeqCst);
             state.account_channels.clear();
+            state.home_snapshot = None;
         }
         account::tv::forget_token();
         account::tv::forget_access();
@@ -838,6 +883,8 @@ fn authorize(ui: &StreamTube, state: &State, interactive: bool, choose_account: 
 
 /// The sign-in attempt still wanted by the interface; a new attempt or Cancel changes it.
 static ACCOUNT_REQUEST: AtomicI32 = AtomicI32::new(0);
+/// Set by a feed thread when Google no longer accepts the saved sign-in.
+static ACCOUNT_LOST: AtomicBool = AtomicBool::new(false);
 
 /// Shows a code for youtube.com/activate, opens that page, and waits for approval.
 fn sign_in(
@@ -898,6 +945,9 @@ fn following_channels(state: &AppState) -> Vec<Channel> {
 
 fn reload(ui: &StreamTube, state: &State) {
     let screen = ui.get_screen();
+    if screen == Screen::Home && restore_home(ui, state) {
+        return;
+    }
     let (feed, empty) = {
         let state = state.borrow();
         state.request.fetch_add(1, Ordering::Relaxed);
@@ -1021,11 +1071,16 @@ fn reload(ui: &StreamTube, state: &State) {
         empty.into()
     });
     let Some(feed) = feed else { return };
+    let home = screen == Screen::Home && ui.get_category() == 0;
     ui.set_busy(true);
     ui.set_message("Loading…".into());
 
     if !spawn_feed(ui, state, feed, empty) {
         feed_error(ui);
+        return;
+    }
+    if home && COLD_START.swap(false, Ordering::Relaxed) {
+        show_cached_home(ui, state);
     }
 }
 
@@ -1103,7 +1158,11 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
     let client = Client::new(language);
     let append = matches!(feed, Feed::Next(_));
     let shorts = matches!(feed, Feed::Shorts | Feed::Account(TvPage::Shorts, ..));
-    let account_feed = matches!(feed, Feed::Account(..) | Feed::Next(FeedCursor::Account(..)));
+    let home = matches!(
+        feed,
+        Feed::Account(TvPage::Home, ..) | Feed::ForYou(_) | Feed::Home(Category::All)
+    );
+    let mut account_feed = matches!(feed, Feed::Next(FeedCursor::Account(..)));
     // Shorts that came with the account's page; they fill the Shorts shelf
     let mut account_shorts = Vec::new();
     let mut account_page = None;
@@ -1112,6 +1171,7 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
             Some((found, shorts)) => {
                 account_shorts = shorts;
                 account_page = Some(found);
+                account_feed = true;
                 Feed::Local(Vec::new())
             }
             None => *anonymous,
@@ -1119,7 +1179,8 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
         feed => feed,
     };
     // the first page of the main Home feed gets a Shorts shelf, fetched alongside it
-    let shelf = if matches!(feed, Feed::ForYou(_) | Feed::Home(Category::All)) {
+    let home_without_shorts = home && account_page.is_some() && account_shorts.len() < 4;
+    let shelf = if home_without_shorts || matches!(feed, Feed::ForYou(_) | Feed::Home(Category::All)) {
         std::thread::Builder::new()
             .name("stream-tube-shorts-shelf".into())
             .spawn(move || Client::new(language).shorts())
@@ -1171,6 +1232,11 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
     let shelf_saved = saved.clone();
     if target
         .upgrade_in_event_loop(move |ui| {
+            if ACCOUNT_LOST.swap(false, Ordering::Relaxed) {
+                // the grant was revoked; the account screen says to connect again
+                let request = ACCOUNT_REQUEST.load(Ordering::SeqCst);
+                ui.invoke_account_result(request, 5, "".into(), "".into(), "".into());
+            }
             if check.load(Ordering::Relaxed) != generation {
                 return;
             }
@@ -1195,16 +1261,25 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
                 ui.invoke_page_appended(missed);
             } else {
                 let available = !page.videos.is_empty();
-                ui.set_message(if available { "".into() } else { empty.into() });
-                replace_rows(
-                    &ui,
-                    page.videos
-                        .iter()
-                        .filter(|video| !is_hidden(&video.id))
-                        .map(|video| video_row(video, saved.contains(&video.id)))
-                        .collect(),
-                );
-                set_rows(&ui.get_shorts_shelf(), Vec::new());
+                if home && available {
+                    remember_home(Some(&page.videos), None);
+                }
+                let cached = CACHE_ON_SCREEN.swap(false, Ordering::Relaxed);
+                if cached && ui.get_feed_scroll() < -24.0 {
+                    // the viewer is reading the last feed; the new videos go below it
+                    append_rows(&ui, page.videos, &saved);
+                } else {
+                    ui.set_message(if available { "".into() } else { empty.into() });
+                    replace_rows(
+                        &ui,
+                        page.videos
+                            .iter()
+                            .filter(|video| !is_hidden(&video.id))
+                            .map(|video| video_row(video, saved.contains(&video.id)))
+                            .collect(),
+                    );
+                    set_rows(&ui.get_shorts_shelf(), Vec::new());
+                }
                 ui.set_busy(false);
                 if available && shorts {
                     ui.invoke_open_shorts();
@@ -1217,7 +1292,7 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
         return;
     }
 
-    let shelf_videos = if account_shorts.len() >= 3 {
+    let shelf_videos = if account_shorts.len() >= 4 {
         Some(account_shorts)
     } else {
         shelf.map(|shelf| shelf.join().ok().flatten().map(|page| page.videos).unwrap_or_default())
@@ -1228,8 +1303,8 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
             .filter(|video| !is_hidden(&video.id))
             .take(12)
             .collect::<Vec<_>>();
-        if videos.len() >= 3 && request.load(Ordering::Relaxed) == generation {
-            ids.extend(videos.iter().map(|video| video.id.clone()));
+        if videos.len() >= 4 && request.load(Ordering::Relaxed) == generation {
+            ids.extend(videos.iter().take(4).map(|video| video.id.clone()));
             let marks = videos
                 .iter()
                 .map(|video| shelf_saved.contains(&video.id))
@@ -1244,6 +1319,9 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
                     .zip(marks)
                     .map(|(video, saved)| video_row(video, saved))
                     .collect::<Vec<_>>();
+                if home {
+                    remember_home(None, Some(&videos));
+                }
                 let model = ui.get_videos();
                 let Some(feed) = model.as_any().downcast_ref::<VecModel<VideoRow>>() else {
                     return;
@@ -1252,6 +1330,9 @@ fn fetch_feed(feed: Feed, transaction: FeedTransaction) {
                     return;
                 }
                 set_rows(&ui.get_shorts_shelf(), rows);
+                if feed.iter().any(|row| row.id == SHELF_ID) {
+                    return;
+                }
                 feed.insert(
                     feed.row_count().min(3),
                     VideoRow {
@@ -1295,7 +1376,7 @@ fn find_owners(
             let current = |check: &(Arc<AtomicU64>, u64)| check.0.load(Ordering::Relaxed) == check.1;
             let mut known = Vec::new();
             let mut lookups = Vec::new();
-            for (name, id) in faceless.into_iter().take(24) {
+            for (name, id) in faceless.into_iter().take(10) {
                 match OWNERS.lock().ok().and_then(|owners| owners.get(&name).cloned()) {
                     Some(owner) => known.push((name, owner)),
                     None => lookups.push((name, id)),
@@ -1377,7 +1458,14 @@ fn account_feed_page(
     continuation: Option<&str>,
     channels: &Arc<Vec<Channel>>,
 ) -> Option<(FeedPage, Vec<Video>)> {
-    let token = account::tv::access_token().ok()?;
+    let token = match account::tv::access_token() {
+        Ok(token) => token,
+        Err(account::tv::Failure::Reconnect) => {
+            ACCOUNT_LOST.store(true, Ordering::Relaxed);
+            return None;
+        }
+        Err(_) => return None,
+    };
     let page = match source {
         TvPage::Home => account::tv::browse(&token, account::tv::HOME, continuation),
         TvPage::Topic(id) => account::tv::browse(&token, id, continuation),
@@ -1388,16 +1476,23 @@ fn account_feed_page(
     if continuation.is_none() && page.videos.is_empty() {
         return None;
     }
-    let by_name: HashMap<String, &Channel> = channels
-        .iter()
-        .map(|channel| (channel.name.trim().to_lowercase(), channel))
-        .collect();
+    let mut by_name: HashMap<String, Option<&Channel>> = HashMap::new();
+    for channel in channels.iter() {
+        by_name
+            .entry(channel.name.trim().to_lowercase())
+            .and_modify(|known| *known = None)
+            .or_insert(Some(channel));
+    }
     let by_id: HashMap<&str, &Channel> = channels.iter().map(|channel| (channel.id.as_str(), channel)).collect();
     let enrich = |mut video: Video| {
-        let known = by_id
-            .get(video.channel.id.as_str())
-            .or_else(|| by_name.get(&video.channel.name.trim().to_lowercase()))
-            .copied();
+        let known = match by_id.get(video.channel.id.as_str()) {
+            Some(channel) => Some(*channel),
+            // a tile that names its channel's id is not matched by name
+            None if video.channel.id.is_empty() => {
+                by_name.get(&video.channel.name.trim().to_lowercase()).copied().flatten()
+            }
+            None => None,
+        };
         if let Some(channel) = known {
             video.channel.id = channel.id.clone();
             video.avatar = channel.avatar.clone();
@@ -1417,6 +1512,155 @@ fn personal(account: bool, page: TvPage, anonymous: Feed, channels: Vec<Channel>
         Feed::Account(page, Box::new(anonymous), Arc::new(channels))
     } else {
         anonymous
+    }
+}
+
+/// Keeps Home as it is now, when it is on screen with a feed, for when the viewer comes back.
+fn keep_home(ui: &StreamTube, state: &State) {
+    if ui.get_screen() != Screen::Home || ui.get_busy() || ui.get_failed() {
+        return;
+    }
+    let rows: Vec<VideoRow> = ui.get_videos().iter().collect();
+    if rows.len() < 2 {
+        return;
+    }
+    let mut state = state.borrow_mut();
+    let next = state.next_page.lock().ok().and_then(|next| next.clone());
+    state.home_snapshot = Some(HomeSnapshot {
+        rows,
+        shelf: ui.get_shorts_shelf().iter().collect(),
+        has_more: ui.get_has_more() && next.is_some(),
+        next,
+        category: ui.get_category(),
+        language: current_language(ui).code(),
+        account: state.library.connected_account && account::tv::saved_token().is_some(),
+        at: std::time::Instant::now(),
+    });
+}
+
+/// Shows the Home that was left, if it is still the same Home and not too old.
+fn restore_home(ui: &StreamTube, state: &State) -> bool {
+    const FRESH: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    let Some(snapshot) = state.borrow_mut().home_snapshot.take() else {
+        return false;
+    };
+    let state = state.borrow();
+    let account = state.library.connected_account && account::tv::saved_token().is_some();
+    if snapshot.at.elapsed() > FRESH
+        || snapshot.category != ui.get_category()
+        || snapshot.language != current_language(ui).code()
+        || snapshot.account != account
+    {
+        return false;
+    }
+    // whatever the other screen was still loading is not wanted any more
+    let generation = state.request.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Ok(mut next) = state.next_page.lock() {
+        *next = snapshot.next;
+    }
+    let rows: Vec<VideoRow> = snapshot.rows.into_iter().filter(|row| !is_hidden(&row.id)).collect();
+    let ids: Vec<String> = rows
+        .iter()
+        .chain(&snapshot.shelf)
+        .filter(|row| row.kind == 0 && !row.has_thumbnail)
+        .map(|row| row.id.to_string())
+        .collect();
+    let avatars: Vec<String> = rows
+        .iter()
+        .filter(|row| !row.has_avatar && !row.avatar_url.is_empty())
+        .map(|row| row.avatar_url.to_string())
+        .collect();
+    replace_rows(ui, rows);
+    set_rows(&ui.get_shorts_shelf(), snapshot.shelf);
+    ui.set_failed(false);
+    ui.set_busy(false);
+    ui.set_loading_more(false);
+    ui.set_load_more_failed(false);
+    ui.set_has_more(snapshot.has_more);
+    ui.set_message("".into());
+    // the list measures only the rows it has drawn, so an old offset lands on another
+    // row; the feed comes back from its top instead
+    ui.set_feed_scroll(0.0);
+    if state.library.thumbnails && (!ids.is_empty() || !avatars.is_empty()) {
+        let check = (state.request.clone(), generation);
+        load_images(ui, ids, avatars, Some(check), true, state.library.extras);
+    }
+    true
+}
+
+/// True until Home has been shown once in this run of the app.
+static COLD_START: AtomicBool = AtomicBool::new(true);
+/// True while Home shows the remembered feed and the new one is on its way.
+static CACHE_ON_SCREEN: AtomicBool = AtomicBool::new(false);
+const HOME_CACHE_KEY: &str = "stream-tube-home-feed";
+/// How long a remembered Home feed is still worth showing.
+const HOME_CACHE_HOURS: u64 = 24;
+
+/// The first page of Home from the last run, shown at once on the next start.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct HomeCache {
+    saved_at: u64,
+    videos: Vec<Video>,
+    shorts: Vec<Video>,
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Keeps Home's videos, or its Shorts, for the next start.
+fn remember_home(videos: Option<&[Video]>, shorts: Option<&[Video]>) {
+    let mut cache: HomeCache = rustferry::storage::get(HOME_CACHE_KEY).ok().flatten().unwrap_or_default();
+    if let Some(videos) = videos {
+        cache.videos = videos.iter().take(30).cloned().collect();
+        cache.saved_at = now_seconds();
+    }
+    if let Some(shorts) = shorts {
+        cache.shorts = shorts.iter().take(12).cloned().collect();
+    }
+    let _ = rustferry::storage::set(HOME_CACHE_KEY, &cache);
+}
+
+/// Opens Home on the feed of the last run while the new one loads.
+fn show_cached_home(ui: &StreamTube, state: &State) {
+    let Some(cache) = rustferry::storage::get::<HomeCache>(HOME_CACHE_KEY).ok().flatten() else {
+        return;
+    };
+    if cache.videos.len() < 3 || now_seconds().saturating_sub(cache.saved_at) > HOME_CACHE_HOURS * 3600 {
+        return;
+    }
+    let state = state.borrow();
+    let saved = |id: &str| state.library.is_saved(id);
+    let mut rows: Vec<VideoRow> = cache
+        .videos
+        .iter()
+        .filter(|video| !is_hidden(&video.id))
+        .map(|video| video_row(video, saved(&video.id)))
+        .collect();
+    let shorts: Vec<VideoRow> = cache.shorts.iter().map(|video| video_row(video, saved(&video.id))).collect();
+    if shorts.len() >= 4 {
+        rows.insert(
+            rows.len().min(3),
+            VideoRow {
+                id: SHELF_ID.into(),
+                kind: 1,
+                ..Default::default()
+            },
+        );
+    }
+    replace_rows(ui, rows);
+    set_rows(&ui.get_shorts_shelf(), shorts);
+    ui.set_busy(false);
+    ui.set_message("".into());
+    CACHE_ON_SCREEN.store(true, Ordering::Relaxed);
+    if state.library.thumbnails {
+        let ids = cache.videos.iter().chain(&cache.shorts).map(|video| video.id.clone()).collect();
+        let avatars = cache.videos.iter().map(|video| video.avatar.clone()).collect();
+        let check = (state.request.clone(), state.request.load(Ordering::Relaxed));
+        load_images(ui, ids, avatars, Some(check), true, state.library.extras);
     }
 }
 
@@ -1897,7 +2141,19 @@ fn open_player(
     shorts: bool,
     feed: bool,
 ) {
-    let has_more = feed && ui.get_has_more();
+    open_player_with(ui, state, videos, first, shorts, feed, None);
+}
+
+fn open_player_with(
+    ui: &StreamTube,
+    state: &State,
+    videos: Vec<Video>,
+    first: usize,
+    shorts: bool,
+    feed: bool,
+    run: Option<ShortsRun>,
+) {
+    let has_more = run.is_some() || (feed && ui.get_has_more());
     let (number, tracks) = {
         let mut state = state.borrow_mut();
         state.playback_number = state.playback_number.wrapping_add(1);
@@ -1908,6 +2164,7 @@ fn open_player(
             videos,
             shorts,
             feed_generation: feed.then(|| state.request.load(Ordering::Relaxed)),
+            run,
         });
         (number, tracks)
     };
@@ -1924,6 +2181,70 @@ fn open_player(
         state.borrow_mut().playback = None;
         notify(&ui, "Could not open the player");
     }
+}
+
+/// A page of a run of Shorts on its way from a worker thread to the open player.
+static SHORTS_PAGE: Mutex<Option<(i32, Option<account::tv::HomePage>)>> = Mutex::new(None);
+
+/// Fetches the next page of the account's run of Shorts for the open player.
+/// False when that player has no run, so the feed's own pages are used.
+fn more_shorts(ui: &StreamTube, state: &State, number: i32) -> bool {
+    let cursor = {
+        let mut state = state.borrow_mut();
+        let Some(playback) = state.playback.as_mut().filter(|playback| playback.number == number) else {
+            return false;
+        };
+        let cursor = match playback.run.clone() {
+            None => return false,
+            Some(ShortsRun::Loading) => return true,
+            Some(ShortsRun::Start) => None,
+            Some(ShortsRun::Next(token)) => Some(token),
+        };
+        playback.run = Some(ShortsRun::Loading);
+        cursor
+    };
+    let target = ui.as_weak();
+    let _ = std::thread::Builder::new()
+        .name("stream-tube-shorts-run".into())
+        .spawn(move || {
+            let page = account::tv::access_token()
+                .and_then(|token| account::tv::shorts(&token, cursor.as_deref()))
+                .ok();
+            if let Ok(mut pending) = SHORTS_PAGE.lock() {
+                *pending = Some((number, page));
+            }
+            let _ = target.upgrade_in_event_loop(|ui| ui.invoke_shorts_page_ready());
+        });
+    true
+}
+
+/// Hands the page of Shorts that arrived to the player that asked for it.
+fn deliver_shorts(state: &State) {
+    let Some((number, page)) = SHORTS_PAGE.lock().ok().and_then(|mut pending| pending.take()) else {
+        return;
+    };
+    let mut state = state.borrow_mut();
+    let state = &mut *state;
+    let Some(playback) = state.playback.as_mut().filter(|playback| playback.number == number) else {
+        return;
+    };
+    let Some(page) = page else {
+        // a later swipe past the end tries again
+        playback.run = Some(ShortsRun::Start);
+        player::append(number, "[]", true, true);
+        return;
+    };
+    let known: HashSet<&str> = playback.videos.iter().map(|video| video.id.as_str()).collect();
+    let extra: Vec<Video> = page
+        .videos
+        .into_iter()
+        .filter(|video| !known.contains(video.id.as_str()) && !is_hidden(&video.id))
+        .collect();
+    let more = page.next.is_some();
+    playback.run = page.next.map(ShortsRun::Next);
+    let tracks = player::tracks(&extra, |id| state.library.is_saved(id));
+    playback.videos.extend(extra);
+    player::append(number, &tracks, more, false);
 }
 
 fn load_video_description(ui: &StreamTube, number: i32, id: String) {

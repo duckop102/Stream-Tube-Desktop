@@ -39,6 +39,7 @@ struct Track<'a> {
     title: &'a str,
     channel: &'a str,
     channel_link: bool,
+    avatar: &'a str,
     saved: bool,
 }
 
@@ -50,6 +51,7 @@ pub fn tracks(videos: &[Video], is_saved: impl Fn(&str) -> bool) -> String {
             title: &video.title,
             channel: &video.channel.name,
             channel_link: youtube::is_channel_id(&video.channel.id),
+            avatar: &video.avatar,
             saved: is_saved(&video.id),
         })
         .collect();

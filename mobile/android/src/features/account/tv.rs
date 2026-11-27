@@ -195,7 +195,10 @@ fn tv_call(access_token: &str, endpoint: &str, mut body: Value) -> Result<Value,
     )?;
     match status {
         200..=299 => Ok(reply),
-        401 | 403 => Err(Failure::Reconnect),
+        401 | 403 => {
+            forget_access();
+            Err(Failure::Reconnect)
+        }
         _ => Err(Failure::Network),
     }
 }
@@ -261,12 +264,14 @@ fn with_shelf_pages(access_token: &str, mut page: HomePage, shelves: &[String]) 
         let tasks: Vec<_> = shelves
             .iter()
             .take(4)
-            .map(|token| {
-                scope.spawn(move || {
-                    tv_call(access_token, "browse", json!({ "continuation": token }))
-                        .map(|reply| parse_home(&reply).0.videos)
-                        .unwrap_or_default()
-                })
+            .filter_map(|token| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || {
+                        tv_call(access_token, "browse", json!({ "continuation": token }))
+                            .map(|reply| parse_home(&reply).0.videos)
+                            .unwrap_or_default()
+                    })
+                    .ok()
             })
             .collect();
         tasks.into_iter().filter_map(|task| task.join().ok()).collect()
@@ -350,7 +355,11 @@ pub fn shorts(access_token: &str, continuation: Option<&str>) -> Result<HomePage
             sequence.to_owned()
         }
     };
-    let reply = tv_call(access_token, "reel/reel_watch_sequence", json!({ "sequenceParams": sequence }))?;
+    let reply = match tv_call(access_token, "reel/reel_watch_sequence", json!({ "sequenceParams": sequence })) {
+        Ok(reply) => reply,
+        Err(error) if page.videos.is_empty() => return Err(error),
+        Err(_) => return Ok(page),
+    };
     let entries: Vec<(String, String)> = reply
         .get("entries")
         .and_then(Value::as_array)
@@ -364,11 +373,15 @@ pub fn shorts(access_token: &str, continuation: Option<&str>) -> Result<HomePage
         })
         .collect();
     // the run names only the videos; each Short's own page gives its title and channel
-    for batch in entries.chunks(6) {
+    for batch in entries.chunks(12) {
         let found: Vec<Video> = std::thread::scope(|scope| {
             let tasks: Vec<_> = batch
                 .iter()
-                .map(|(id, params)| scope.spawn(move || short_details(access_token, id, params)))
+                .filter_map(|(id, params)| {
+                    std::thread::Builder::new()
+                        .spawn_scoped(scope, move || short_details(access_token, id, params))
+                        .ok()
+                })
                 .collect();
             tasks.into_iter().filter_map(|task| task.join().ok()).collect()
         });
@@ -535,6 +548,7 @@ fn tile_video(tile: &Value) -> Option<Video> {
     })
 }
 
+#[cfg(test)]
 /// The signed-in account's display name.
 pub fn account_name(access_token: &str) -> String {
     account_profile(access_token).0
