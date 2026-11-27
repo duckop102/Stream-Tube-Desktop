@@ -29,5 +29,12 @@ adb exec-out screencap -p > out/6-watch.png
 sleep 15
 adb exec-out screencap -p > out/7-watch-later.png
 adb shell dumpsys meminfo $PKG | head -40 > out/meminfo.txt
+# a second cold start opens on the remembered Home before the network answers
+adb shell am force-stop $PKG
+adb shell monkey -p $PKG -c android.intent.category.LAUNCHER 1
+sleep 4
+adb exec-out screencap -p > out/8-cold-start-4s.png
+sleep 30
+adb exec-out screencap -p > out/9-cold-start-later.png
 adb logcat -d > out/logcat.txt
 exit 0
