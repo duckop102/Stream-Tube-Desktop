@@ -20,7 +20,7 @@ pub enum Category {
     All,
     Music,
     Games,
-    Tech,
+    News,
     Live,
 }
 
@@ -59,13 +59,8 @@ impl Category {
                 "best gameplay moments",
             ],
             (Self::Games, true) => &["новинки игр геймплей", "игровые новости"],
-            (Self::Tech, false) => &[
-                "technology news",
-                "tech review new phone",
-                "tech news this week",
-                "gadget reviews",
-            ],
-            (Self::Tech, true) => &["новости технологий", "обзор гаджетов"],
+            (Self::News, false) => &["news today", "breaking news today", "world news this week"],
+            (Self::News, true) => &["новости сегодня", "главные новости"],
             (Self::Live, false) => &["live stream now", "live now", "live news now"],
             (Self::Live, true) => &["прямой эфир сейчас"],
         }

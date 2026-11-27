@@ -181,7 +181,7 @@ pub fn refresh(refresh_token: &str) -> Result<String, Failure> {
 }
 
 fn tv_call(access_token: &str, endpoint: &str, mut body: Value) -> Result<Value, Failure> {
-    body["context"] = json!({ "client": { "clientName": "TVHTML5", "clientVersion": TV_VERSION, "hl": "en", "gl": "US" } });
+    body["context"] = json!({ "client": { "clientName": "TVHTML5", "clientVersion": TV_VERSION, "hl": "en" } });
     let auth = format!("Bearer {access_token}");
     let (status, reply) = post(
         &format!("https://www.youtube.com/youtubei/v1/{endpoint}?prettyPrint=false"),
@@ -239,15 +239,24 @@ pub struct HomePage {
     pub next: Option<String>,
 }
 
-/// The personal Home feed. Each shelf's own "more" page is fetched too, so a
-/// page holds about as many videos as the phone app shows before scrolling on.
-pub fn home(access_token: &str, continuation: Option<&str>) -> Result<HomePage, Failure> {
+/// The account's Home page of the YouTube TV app.
+pub const HOME: &str = "FEwhat_to_watch";
+
+/// A personal page of the YouTube TV app: Home, or a topic such as
+/// `FEtopics_music`. Each shelf's own "more" page is fetched too, so a page holds
+/// about as many videos as the phone app shows before scrolling on.
+pub fn browse(access_token: &str, page_id: &str, continuation: Option<&str>) -> Result<HomePage, Failure> {
     let body = match continuation {
         Some(token) => json!({ "continuation": token }),
-        None => json!({ "browseId": "FEwhat_to_watch" }),
+        None => json!({ "browseId": page_id }),
     };
     let reply = tv_call(access_token, "browse", body)?;
-    let (mut page, shelves) = parse_home(&reply);
+    let (page, shelves) = parse_home(&reply);
+    Ok(with_shelf_pages(access_token, page, &shelves))
+}
+
+/// Adds the "more" pages of the first few shelves, without repeats.
+fn with_shelf_pages(access_token: &str, mut page: HomePage, shelves: &[String]) -> HomePage {
     let more: Vec<Vec<Video>> = std::thread::scope(|scope| {
         let tasks: Vec<_> = shelves
             .iter()
@@ -267,7 +276,145 @@ pub fn home(access_token: &str, continuation: Option<&str>) -> Result<HomePage, 
     }
     let mut seen = std::collections::HashSet::new();
     page.videos.retain(|video| seen.insert(video.id.clone()));
+    page.shorts.retain(|video| seen.insert(video.id.clone()));
+    page
+}
+
+/// The newest videos of every channel the account follows, newest first, as the
+/// Subscriptions feed of the phone app. The TV page puts a "most relevant" row
+/// first (the one shelf with a header); it is left out so the feed stays in order.
+pub fn subscription_feed(access_token: &str, continuation: Option<&str>) -> Result<HomePage, Failure> {
+    let body = match continuation {
+        Some(token) => json!({ "continuation": token }),
+        None => json!({ "browseId": "FEsubscriptions" }),
+    };
+    let reply = tv_call(access_token, "browse", body)?;
+    Ok(parse_subscription_feed(&reply))
+}
+
+fn parse_subscription_feed(reply: &Value) -> HomePage {
+    // the first reply holds one tab for all channels, then one per channel
+    const ALL: &str = "/contents/tvBrowseRenderer/content/tvSecondaryNavRenderer/sections/0/tvSecondaryNavSectionRenderer/tabs/0/tabRenderer/content/tvSurfaceContentRenderer/content/sectionListRenderer";
+    let list = reply
+        .pointer(ALL)
+        .or_else(|| reply.pointer("/continuationContents/sectionListContinuation"));
+    let Some(list) = list else {
+        return parse_home(reply).0;
+    };
+    let mut page = HomePage::default();
+    let mut relevant = Vec::new();
+    for shelf in list.get("contents").and_then(Value::as_array).into_iter().flatten() {
+        let Some(shelf) = shelf.get("shelfRenderer") else { continue };
+        let mut tiles = Vec::new();
+        find_all(shelf, "tileRenderer", &mut tiles);
+        let headed = shelf.get("headerRenderer").is_some();
+        for video in tiles.into_iter().filter_map(tile_video) {
+            if video.short {
+                page.shorts.push(video);
+            } else if headed {
+                relevant.push(video);
+            } else {
+                page.videos.push(video);
+            }
+        }
+    }
+    // should the page change its rows, the relevant ones are better than none
+    if page.videos.is_empty() {
+        page.videos = relevant;
+    }
+    page.next = list
+        .pointer("/continuations/0/nextContinuationData/continuation")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    page
+}
+
+/// The account's own run of Shorts, as the Shorts tab of the phone app plays it.
+/// The first page starts from the Shorts on the account's Home; later pages
+/// continue that run with `continuation`.
+pub fn shorts(access_token: &str, continuation: Option<&str>) -> Result<HomePage, Failure> {
+    let mut page = HomePage::default();
+    let sequence = match continuation {
+        Some(token) => token.to_owned(),
+        None => {
+            let home = tv_call(access_token, "browse", json!({ "browseId": HOME }))?;
+            page.videos = parse_home(&home).0.shorts;
+            let mut starts = Vec::new();
+            find_all(&home, "reelWatchEndpoint", &mut starts);
+            let Some(sequence) = starts
+                .iter()
+                .find_map(|start| start.get("sequenceParams").and_then(Value::as_str))
+            else {
+                return Ok(page);
+            };
+            sequence.to_owned()
+        }
+    };
+    let reply = tv_call(access_token, "reel/reel_watch_sequence", json!({ "sequenceParams": sequence }))?;
+    let entries: Vec<(String, String)> = reply
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.pointer("/command/reelWatchEndpoint"))
+        .filter_map(|endpoint| {
+            let id = endpoint.get("videoId").and_then(Value::as_str).filter(|id| is_video_id(id))?;
+            let params = endpoint.get("params").and_then(Value::as_str).unwrap_or_default();
+            Some((id.to_owned(), params.to_owned()))
+        })
+        .collect();
+    // the run names only the videos; each Short's own page gives its title and channel
+    for batch in entries.chunks(6) {
+        let found: Vec<Video> = std::thread::scope(|scope| {
+            let tasks: Vec<_> = batch
+                .iter()
+                .map(|(id, params)| scope.spawn(move || short_details(access_token, id, params)))
+                .collect();
+            tasks.into_iter().filter_map(|task| task.join().ok()).collect()
+        });
+        page.videos.extend(found);
+    }
+    let mut seen = std::collections::HashSet::new();
+    page.videos.retain(|video| seen.insert(video.id.clone()));
+    page.next = reply.get("continuation").and_then(Value::as_str).map(str::to_owned);
     Ok(page)
+}
+
+/// A Short with the title and channel from its own page; the id alone if that fails.
+fn short_details(access_token: &str, id: &str, params: &str) -> Video {
+    let mut video = Video {
+        id: id.to_owned(),
+        short: true,
+        ..Video::default()
+    };
+    let Ok(reply) = tv_call(
+        access_token,
+        "reel/reel_item_watch",
+        json!({ "playerRequest": { "videoId": id }, "params": params }),
+    ) else {
+        return video;
+    };
+    read_short(&mut video, &reply);
+    video
+}
+
+fn read_short(video: &mut Video, reply: &Value) {
+    let mut titles = Vec::new();
+    find_all(reply, "reelTitleText", &mut titles);
+    video.title = titles.first().map(|title| text(title)).unwrap_or_default().trim().to_owned();
+    let mut channels = Vec::new();
+    find_all(reply, "channelTitleText", &mut channels);
+    if let Some(channel) = channels.first() {
+        video.channel.name = text(channel);
+        let mut links = Vec::new();
+        find_all(channel, "browseId", &mut links);
+        video.channel.id = links
+            .into_iter()
+            .filter_map(Value::as_str)
+            .find(|id| is_channel_id(id))
+            .unwrap_or_default()
+            .to_owned();
+    }
 }
 
 /// The page and the "more" tokens of its video shelves.
@@ -585,6 +732,43 @@ mod home_tests {
         assert_eq!(shelves, vec!["shelf-more".to_owned()]);
         assert_eq!(page.next.as_deref(), Some("next-shelves"));
     }
+
+    #[test]
+    fn subscription_feed_keeps_the_newest_first_order() {
+        let shelf = |header: bool, id: &str| {
+            let mut shelf = json!({ "content": { "horizontalListRenderer": {
+                "items": [ tile("TILE_CONTENT_TYPE_VIDEO", id, "watchEndpoint") ]
+            } } });
+            if header {
+                shelf["headerRenderer"] = json!({ "shelfHeaderRenderer": {} });
+            }
+            json!({ "shelfRenderer": shelf })
+        };
+        let reply = json!({ "contents": { "tvBrowseRenderer": { "content": { "tvSecondaryNavRenderer": { "sections": [
+            { "tvSecondaryNavSectionRenderer": { "tabs": [
+                { "tabRenderer": { "content": { "tvSurfaceContentRenderer": { "content": { "sectionListRenderer": {
+                    "contents": [
+                        shelf(true, "relevant111"),
+                        shelf(false, "newest11111"),
+                        shelf(false, "older111111"),
+                        { "shelfRenderer": { "headerRenderer": {}, "content": { "horizontalListRenderer": {
+                            "items": [ tile("TILE_CONTENT_TYPE_SHORTS", "short111111", "reelWatchEndpoint") ]
+                        } } } }
+                    ],
+                    "continuations": [ { "nextContinuationData": { "continuation": "older-page" } } ]
+                } } } } } },
+                // a channel's own tab is not part of the feed
+                { "tabRenderer": { "content": { "tvSurfaceContentRenderer": { "content": { "sectionListRenderer": {
+                    "contents": [ shelf(false, "channel1111") ]
+                } } } } } }
+            ] } }
+        ] } } } } });
+        let page = parse_subscription_feed(&reply);
+        let ids: Vec<&str> = page.videos.iter().map(|video| video.id.as_str()).collect();
+        assert_eq!(ids, ["newest11111", "older111111"]);
+        assert_eq!(page.shorts.len(), 1);
+        assert_eq!(page.next.as_deref(), Some("older-page"));
+    }
 }
 
 #[cfg(test)]
@@ -657,5 +841,6 @@ mod tests {
         println!("account: {}", account_name(&access));
         println!("subscriptions: {}", subscriptions(&access).expect("subscriptions").len());
     }
+
 }
 

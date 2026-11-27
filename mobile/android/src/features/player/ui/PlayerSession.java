@@ -167,6 +167,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         videoBox = shorts ? new ShortsGesture(activity, this::move) : new FrameLayout(activity);
         videoBox.setBackgroundColor(Color.BLACK);
         videoFrame = new VideoFrame(activity);
+        videoFrame.setFill(shorts);
         TextureView texture = new TextureView(activity);
         videoFrame.addView(texture);
         videoBox.addView(videoFrame, new FrameLayout.LayoutParams(-1, -1));
@@ -1400,9 +1401,16 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
 
     // ───────────── video surface ─────────────
 
-    /** Fits its single child (the TextureView) to the video's aspect ratio, centred. */
+    /** Fits its single child (the TextureView) to the video's aspect ratio, centred. With fill
+     *  on, an upright video covers the frame and loses its edges, as Shorts do on YouTube. */
     private static final class VideoFrame extends FrameLayout {
         private float aspect = 16f / 9f;
+        private boolean fill;
+
+        void setFill(boolean fill) {
+            this.fill = fill;
+            requestLayout();
+        }
 
         VideoFrame(Activity activity) {
             super(activity);
@@ -1424,6 +1432,10 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             if (childHeight > height) {
                 childHeight = height;
                 childWidth = Math.round(height * aspect);
+            }
+            if (fill && aspect < 0.8f && width > 0 && height > 0) {
+                childWidth = Math.max(width, Math.round(height * aspect));
+                childHeight = Math.round(childWidth / aspect);
             }
             for (int i = 0; i < getChildCount(); i++) {
                 getChildAt(i).measure(MeasureSpec.makeMeasureSpec(childWidth, MeasureSpec.EXACTLY),
