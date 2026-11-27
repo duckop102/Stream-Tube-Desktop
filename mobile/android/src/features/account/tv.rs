@@ -1,0 +1,377 @@
+//! YouTube sign-in through the TV device flow, the same method the desktop app uses.
+//!
+//! The phone opens youtube.com/activate with the code filled in; the user picks an
+//! account there and allows access. Unlike Google Play services authorization, this
+//! needs no OAuth client registered for the APK's signing key, so self-signed builds
+//! can sign in. The refresh token is kept in the app's private storage.
+use crate::entities::Channel;
+use crate::features::youtube::is_channel_id;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::time::Duration;
+use url::Url;
+
+// Public OAuth client of the YouTube TV app.
+const CLIENT_ID: &str = "861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com";
+const CLIENT_SECRET: &str = "SboVhoG9s0rNafixCSGGKXAT";
+const SCOPE: &str = "http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content";
+const TV_VERSION: &str = "7.20251120.13.00";
+const TV_UA: &str = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)";
+const ACTIVATE_URL: &str = "https://www.youtube.com/activate";
+const STORAGE_KEY: &str = "stream-tube-tv-account";
+const MAX_CHANNELS: usize = 500;
+
+/// Why a step failed, as the account status codes the interface understands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    Cancelled = 1,
+    Unavailable = 2,
+    Network = 4,
+    Reconnect = 5,
+    Expired = 8,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeviceCode {
+    device_code: String,
+    pub user_code: String,
+    pub interval: u64,
+    pub expires_in: u64,
+}
+
+impl DeviceCode {
+    /// The activation page with the code filled in.
+    pub fn activate_url(&self) -> String {
+        activate_url(&self.user_code)
+    }
+}
+
+pub fn activate_url(user_code: &str) -> String {
+    let mut url = Url::parse(ACTIVATE_URL).expect("valid activation URL");
+    url.query_pairs_mut().append_pair("user_code", user_code);
+    url.into()
+}
+
+pub enum Poll {
+    Pending,
+    SlowDown,
+    Approved { access_token: String, refresh_token: String },
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Stored {
+    refresh_token: String,
+}
+
+/// The saved refresh token, if an account is connected.
+pub fn saved_token() -> Option<String> {
+    rustferry::storage::get::<Stored>(STORAGE_KEY)
+        .ok()
+        .flatten()
+        .map(|stored| stored.refresh_token)
+        .filter(|token| !token.is_empty())
+}
+
+pub fn save_token(refresh_token: &str) -> bool {
+    rustferry::storage::set(STORAGE_KEY, &Stored { refresh_token: refresh_token.to_owned() }).is_ok()
+}
+
+pub fn forget_token() {
+    let _ = rustferry::storage::set(STORAGE_KEY, &Stored::default());
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(20)))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+fn post(url: &str, body: &Value, headers: &[(&str, &str)]) -> Result<(u16, Value), Failure> {
+    let mut request = agent().post(url).header("User-Agent", TV_UA);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let mut response = request
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .map_err(|_| Failure::Network)?;
+    let status = response.status().as_u16();
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(8 * 1024 * 1024)
+        .read_to_string()
+        .map_err(|_| Failure::Network)?;
+    Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+}
+
+/// Step 1: a code for the user to approve on youtube.com/activate.
+pub fn start() -> Result<DeviceCode, Failure> {
+    let device_id: String = (0..32).map(|_| format!("{:x}", rand_nibble())).collect();
+    let (_, reply) = post(
+        "https://www.youtube.com/o/oauth2/device/code",
+        &json!({ "client_id": CLIENT_ID, "scope": SCOPE, "device_id": device_id, "device_model": "ytlr::" }),
+        &[],
+    )?;
+    let text = |key: &str| reply.get(key).and_then(Value::as_str).map(str::to_owned);
+    Ok(DeviceCode {
+        device_code: text("device_code").ok_or(Failure::Unavailable)?,
+        user_code: text("user_code").ok_or(Failure::Unavailable)?,
+        interval: reply.get("interval").and_then(Value::as_u64).unwrap_or(5).clamp(1, 30),
+        expires_in: reply.get("expires_in").and_then(Value::as_u64).unwrap_or(1800),
+    })
+}
+
+/// Step 2: asks whether the user has approved the code yet.
+pub fn poll(code: &DeviceCode) -> Result<Poll, Failure> {
+    let (_, reply) = post(
+        "https://www.youtube.com/o/oauth2/token",
+        &json!({
+            "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "code": code.device_code,
+            "grant_type": "http://oauth.net/grant_type/device/1.0"
+        }),
+        &[],
+    )?;
+    parse_poll(&reply)
+}
+
+fn parse_poll(reply: &Value) -> Result<Poll, Failure> {
+    if let Some(error) = reply.get("error").and_then(Value::as_str) {
+        return match error {
+            "authorization_pending" => Ok(Poll::Pending),
+            "slow_down" => Ok(Poll::SlowDown),
+            "expired_token" => Err(Failure::Expired),
+            "access_denied" => Err(Failure::Cancelled),
+            _ => Err(Failure::Unavailable),
+        };
+    }
+    let token = |key: &str| {
+        reply
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+            .map(str::to_owned)
+    };
+    Ok(Poll::Approved {
+        access_token: token("access_token").ok_or(Failure::Unavailable)?,
+        refresh_token: token("refresh_token").ok_or(Failure::Unavailable)?,
+    })
+}
+
+/// A fresh access token from the saved refresh token.
+pub fn refresh(refresh_token: &str) -> Result<String, Failure> {
+    let (status, reply) = post(
+        "https://www.youtube.com/o/oauth2/token",
+        &json!({
+            "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
+            "refresh_token": refresh_token, "grant_type": "refresh_token"
+        }),
+        &[],
+    )?;
+    if let Some(token) = reply.get("access_token").and_then(Value::as_str) {
+        return Ok(token.to_owned());
+    }
+    // the grant was revoked from the Google account page
+    Err(if status == 400 || status == 401 { Failure::Reconnect } else { Failure::Unavailable })
+}
+
+fn tv_call(access_token: &str, endpoint: &str, mut body: Value) -> Result<Value, Failure> {
+    body["context"] = json!({ "client": { "clientName": "TVHTML5", "clientVersion": TV_VERSION, "hl": "en", "gl": "US" } });
+    let auth = format!("Bearer {access_token}");
+    let (status, reply) = post(
+        &format!("https://www.youtube.com/youtubei/v1/{endpoint}?prettyPrint=false"),
+        &body,
+        &[
+            ("Authorization", &auth),
+            ("X-YouTube-Client-Name", "7"),
+            ("X-YouTube-Client-Version", TV_VERSION),
+            ("Origin", "https://www.youtube.com"),
+        ],
+    )?;
+    match status {
+        200..=299 => Ok(reply),
+        401 | 403 => Err(Failure::Reconnect),
+        _ => Err(Failure::Network),
+    }
+}
+
+/// The signed-in account's display name.
+pub fn account_name(access_token: &str) -> String {
+    tv_call(access_token, "account/accounts_list", json!({ "accountReadMask": { "returnOwner": true } }))
+        .ok()
+        .and_then(|reply| {
+            let item = find(&reply, "accountItem").or_else(|| find(&reply, "accountItemRenderer"))?;
+            item.get("accountName").map(text).filter(|name| !name.is_empty())
+        })
+        .unwrap_or_else(|| "YouTube account".to_owned())
+}
+
+/// Channels the account is subscribed to: the per-channel tabs of the TV subscriptions page.
+pub fn subscriptions(access_token: &str) -> Result<Vec<Channel>, Failure> {
+    let reply = tv_call(access_token, "browse", json!({ "browseId": "FEsubscriptions" }))?;
+    Ok(parse_subscriptions(&reply))
+}
+
+fn parse_subscriptions(reply: &Value) -> Vec<Channel> {
+    let mut tabs = Vec::new();
+    find_all(reply, "tabRenderer", &mut tabs);
+    let mut channels: Vec<Channel> = Vec::new();
+    for tab in tabs {
+        let Some(endpoint) = tab
+            .pointer("/endpoint/browseEndpoint")
+            .or_else(|| find(tab, "browseEndpoint"))
+        else {
+            continue;
+        };
+        // older responses link straight to the channel; newer ones keep the channel id
+        // inside the protobuf `params` of an FEsubscriptions link
+        let id = endpoint
+            .get("browseId")
+            .and_then(Value::as_str)
+            .filter(|id| id.starts_with("UC"))
+            .map(str::to_owned)
+            .or_else(|| endpoint.get("params").and_then(Value::as_str).and_then(channel_id_from_params));
+        let Some(id) = id.filter(|id| is_channel_id(id)) else { continue };
+        if channels.iter().any(|channel| channel.id == id) {
+            continue;
+        }
+        let name = tab.get("title").map(text).unwrap_or_default();
+        channels.push(Channel { id, name });
+        if channels.len() == MAX_CHANNELS {
+            break;
+        }
+    }
+    channels
+}
+
+/// Pulls a "UC…" channel id out of base64 protobuf browse params.
+fn channel_id_from_params(params: &str) -> Option<String> {
+    use base64::Engine;
+    let params = params.replace("%3D", "=").replace("%3d", "=");
+    let params = params.trim_end_matches('=');
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(params)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(params))
+        .ok()?;
+    let decoded = String::from_utf8_lossy(&bytes);
+    let start = decoded.find("UC")?;
+    let id: String = decoded[start..].chars().take(24).collect();
+    is_channel_id(&id).then_some(id)
+}
+
+fn text(value: &Value) -> String {
+    if let Some(simple) = value.get("simpleText").and_then(Value::as_str) {
+        return simple.to_owned();
+    }
+    if let Some(runs) = value.get("runs").and_then(Value::as_array) {
+        return runs.iter().filter_map(|run| run.get("text").and_then(Value::as_str)).collect();
+    }
+    value.as_str().unwrap_or_default().to_owned()
+}
+
+fn find<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => map.get(key).or_else(|| map.values().find_map(|child| find(child, key))),
+        Value::Array(items) => items.iter().find_map(|child| find(child, key)),
+        _ => None,
+    }
+}
+
+fn find_all<'a>(value: &'a Value, key: &str, out: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(map) => {
+            for (name, child) in map {
+                if name == key {
+                    out.push(child);
+                } else {
+                    find_all(child, key, out);
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|child| find_all(child, key, out)),
+        _ => {}
+    }
+}
+
+fn rand_nibble() -> u8 {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+    (hasher.finish() & 0xf) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activation_link_carries_the_code() {
+        assert_eq!(activate_url("HDZ-QKX-JSMD"), "https://www.youtube.com/activate?user_code=HDZ-QKX-JSMD");
+        assert_eq!(activate_url("A&B C"), "https://www.youtube.com/activate?user_code=A%26B+C");
+    }
+
+    #[test]
+    fn reads_the_poll_replies() {
+        assert!(matches!(parse_poll(&json!({ "error": "authorization_pending" })), Ok(Poll::Pending)));
+        assert!(matches!(parse_poll(&json!({ "error": "slow_down" })), Ok(Poll::SlowDown)));
+        assert!(matches!(parse_poll(&json!({ "error": "expired_token" })), Err(Failure::Expired)));
+        assert!(matches!(parse_poll(&json!({ "error": "access_denied" })), Err(Failure::Cancelled)));
+        assert!(matches!(parse_poll(&json!({ "access_token": "a" })), Err(Failure::Unavailable)));
+        assert!(matches!(
+            parse_poll(&json!({ "access_token": "a", "refresh_token": "r" })),
+            Ok(Poll::Approved { .. })
+        ));
+    }
+
+    #[test]
+    fn collects_subscribed_channels_from_tabs() {
+        use base64::Engine;
+        let params = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"\x12\x18UCabcdefghijklmnopqrstuv\x18\x01");
+        let reply = json!({ "contents": { "tvBrowseRenderer": { "content": { "tvSecondaryNavRenderer": { "sections": [{
+            "tvSecondaryNavSectionRenderer": { "tabs": [
+                { "tabRenderer": { "title": { "simpleText": "All" }, "endpoint": { "browseEndpoint": { "browseId": "FEsubscriptions" } } } },
+                { "tabRenderer": { "title": { "runs": [{ "text": "Old " }, { "text": "style" }] }, "endpoint": { "browseEndpoint": { "browseId": "UC0123456789abcdefghijkl" } } } },
+                { "tabRenderer": { "title": { "simpleText": "New style" }, "endpoint": { "browseEndpoint": { "browseId": "FEsubscriptions", "params": params } } } },
+                { "tabRenderer": { "title": { "simpleText": "Duplicate" }, "endpoint": { "browseEndpoint": { "browseId": "UC0123456789abcdefghijkl" } } } }
+            ] }
+        }] } } } } });
+        let channels = parse_subscriptions(&reply);
+        assert_eq!(
+            channels,
+            vec![
+                Channel { id: "UC0123456789abcdefghijkl".into(), name: "Old style".into() },
+                Channel { id: "UCabcdefghijklmnopqrstuv".into(), name: "New style".into() },
+            ]
+        );
+    }
+
+    /// Signs in for real: prints a code to approve at youtube.com/activate, then reads
+    /// the account name and subscriptions. Run with
+    /// `cargo test --lib tv_sign_in_live -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn tv_sign_in_live() {
+        let code = start().expect("device code");
+        println!("Approve at {}", code.activate_url());
+        let deadline = std::time::Instant::now() + Duration::from_secs(code.expires_in.min(600));
+        let mut interval = code.interval;
+        let access = loop {
+            assert!(std::time::Instant::now() < deadline, "not approved in time");
+            std::thread::sleep(Duration::from_secs(interval));
+            match poll(&code).expect("poll") {
+                Poll::Pending => {}
+                Poll::SlowDown => interval += 2,
+                Poll::Approved { access_token, refresh_token } => {
+                    assert!(refresh(&refresh_token).is_ok(), "refresh works");
+                    break access_token;
+                }
+            }
+        };
+        println!("account: {}", account_name(&access));
+        println!("subscriptions: {}", subscriptions(&access).expect("subscriptions").len());
+    }
+}

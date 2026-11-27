@@ -17,7 +17,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI32, AtomicU64, Ordering},
     },
 };
 
@@ -107,7 +107,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     select_language(&window, library.language, device_language);
     window.set_thumbnails(library.thumbnails);
     apply_extras(&window, library.extras);
-    window.set_account_available(account::available());
+    // TV sign-in needs only a browser, so every build can connect an account
+    window.set_account_available(true);
     let reconnect = library.connected_account;
     window.set_videos(Rc::new(VecModel::<VideoRow>::default()).into());
     if !storage_writable {
@@ -537,11 +538,23 @@ fn apply_extras(ui: &StreamTube, settings: Extras) {
 }
 
 fn bind_account(window: &StreamTube, state: &State) {
+    let (target, app) = (window.as_weak(), state.clone());
+    window.on_cancel_sign_in(move || {
+        let Some(ui) = target.upgrade() else { return };
+        let mut state = app.borrow_mut();
+        state.account_request = state.account_request.wrapping_add(1);
+        ACCOUNT_REQUEST.store(state.account_request, Ordering::SeqCst);
+        ui.set_account_busy(false);
+        ui.set_account_code("".into());
+    });
+
     let target = window.as_weak();
-    account::listen(move |request, status, name, channels| {
-        let _ = target.upgrade_in_event_loop(move |ui| {
-            ui.invoke_account_result(request, status, name.into(), channels.into());
-        });
+    window.on_open_activation(move || {
+        let Some(ui) = target.upgrade() else { return };
+        let code = ui.get_account_code();
+        if !code.is_empty() && rustferry::system::open_url(account::tv::activate_url(&code)).is_err() {
+            ui.set_notice("Open youtube.com/activate in a browser".into());
+        }
     });
 
     let (target, app) = (window.as_weak(), state.clone());
@@ -564,10 +577,12 @@ fn bind_account(window: &StreamTube, state: &State) {
         {
             let mut state = app.borrow_mut();
             state.account_request = state.account_request.wrapping_add(1);
+            ACCOUNT_REQUEST.store(state.account_request, Ordering::SeqCst);
             state.account_channels.clear();
         }
-        account::cancel();
+        account::tv::forget_token();
         edit_library(&ui, &app, |library| library.connected_account = false);
+        ui.set_account_code("".into());
         ui.set_account_busy(false);
         ui.set_account_connected(false);
         ui.set_account_name("".into());
@@ -584,6 +599,7 @@ fn bind_account(window: &StreamTube, state: &State) {
             return;
         }
         ui.set_account_busy(false);
+        ui.set_account_code("".into());
         if status == 0 {
             let Ok(channels) = serde_json::from_str::<Vec<Channel>>(&channels) else {
                 ui.set_account_message("Could not read subscriptions".into());
@@ -605,9 +621,9 @@ fn bind_account(window: &StreamTube, state: &State) {
             }
             return;
         }
-        if status == 5 && ui.get_account_connected() {
+        if status == 5 {
             app.borrow_mut().account_channels.clear();
-            account::cancel();
+            account::tv::forget_token();
             edit_library(&ui, &app, |library| library.connected_account = false);
             ui.set_account_connected(false);
             ui.set_account_name("".into());
@@ -622,7 +638,8 @@ fn bind_account(window: &StreamTube, state: &State) {
             5 => "Reconnect your YouTube account",
             6 => "This account does not have a YouTube channel yet",
             7 => "YouTube limited the requests. Try again later",
-            _ => "Google sign-in is unavailable",
+            8 => "The sign-in code expired. Try again",
+            _ => "YouTube sign-in failed. Try again",
         };
         ui.set_account_message(message.into());
     });
@@ -637,12 +654,75 @@ fn authorize(ui: &StreamTube, state: &State, interactive: bool, choose_account: 
         state.account_request = state.account_request.wrapping_add(1);
         state.account_request
     };
+    ACCOUNT_REQUEST.store(request, Ordering::SeqCst);
     ui.set_account_busy(true);
     ui.set_account_message("".into());
-    if !account::start(request, interactive, choose_account) {
-        ui.set_account_busy(false);
-        ui.set_account_message("Google sign-in is unavailable".into());
+    ui.set_account_code("".into());
+    let saved = account::tv::saved_token().filter(|_| !choose_account);
+    let target = ui.as_weak();
+    let _ = std::thread::Builder::new()
+        .name("stream-tube-account".into())
+        .spawn(move || {
+            let outcome = match saved {
+                Some(refresh) => account::tv::refresh(&refresh).and_then(|access| read_account(&access)),
+                None if !interactive => Err(account::tv::Failure::Reconnect),
+                None => sign_in(request, &target),
+            };
+            let (status, name, channels) = match outcome {
+                Ok((name, channels)) => (0, name, channels),
+                Err(failure) => (failure as i32, String::new(), "[]".to_owned()),
+            };
+            let _ = target.upgrade_in_event_loop(move |ui| {
+                ui.invoke_account_result(request, status, name.into(), channels.into());
+            });
+        });
+}
+
+/// The sign-in attempt still wanted by the interface; a new attempt or Cancel changes it.
+static ACCOUNT_REQUEST: AtomicI32 = AtomicI32::new(0);
+
+/// Shows a code for youtube.com/activate, opens that page, and waits for approval.
+fn sign_in(
+    request: i32,
+    target: &slint::Weak<StreamTube>,
+) -> Result<(String, String), account::tv::Failure> {
+    use account::tv::{Failure, Poll};
+    let code = account::tv::start()?;
+    let (shown, link) = (code.user_code.clone(), code.activate_url());
+    let _ = target.upgrade_in_event_loop(move |ui| {
+        ui.set_account_code(shown.into());
+        let _ = rustferry::system::open_url(link);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(code.expires_in);
+    let mut interval = code.interval;
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+        if ACCOUNT_REQUEST.load(Ordering::SeqCst) != request {
+            return Err(Failure::Cancelled);
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(Failure::Expired);
+        }
+        match account::tv::poll(&code) {
+            Ok(Poll::Pending) | Err(Failure::Network) => {}
+            Ok(Poll::SlowDown) => interval += 5,
+            Ok(Poll::Approved { access_token, refresh_token }) => {
+                if !account::tv::save_token(&refresh_token) {
+                    return Err(Failure::Unavailable);
+                }
+                return read_account(&access_token);
+            }
+            Err(failure) => return Err(failure),
+        }
     }
+}
+
+/// The account name and its subscriptions as the JSON the interface imports.
+fn read_account(access_token: &str) -> Result<(String, String), account::tv::Failure> {
+    let channels = account::tv::subscriptions(access_token)?;
+    let name = account::tv::account_name(access_token);
+    let channels = serde_json::to_string(&channels).map_err(|_| account::tv::Failure::Unavailable)?;
+    Ok((name, channels))
 }
 
 fn following_channels(state: &AppState) -> Vec<Channel> {

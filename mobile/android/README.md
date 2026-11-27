@@ -26,11 +26,13 @@ cargo test --locked --lib
 
 Run the commands from `mobile/android`. The script builds the Rust libraries and Android bridge with RustFerry, packages Google Play services with the Android Gradle plugin, and signs `target/google-play/Stream-Tube-Android-0.1.0.apk` with the local RustFerry signing identity.
 
-## Google authorization
+## YouTube sign-in
 
-Enable YouTube Data API v3 in Google Cloud. Create an Android OAuth client for `io.github.shiroksh.streamtube` and enter the SHA-1 fingerprint printed by the build. During testing, add the Google account to the project's OAuth test audience.
+Sign-in uses YouTube's TV device flow, like the desktop app. Stream Tube opens youtube.com/activate with a code filled in; pick an account there and allow access. The app keeps the refresh token in its private storage and reads the account name and subscriptions through the TV Innertube client. No Google Cloud project or OAuth client tied to the signing key is needed, so self-signed builds can sign in.
 
-Sign-in uses the Google Play services authorization dialog. Stream Tube requests `youtube.readonly` and fetches the account's channel name and subscriptions. See the [privacy notice](PRIVACY.md) for details.
+## Updates
+
+Builds from this fork's `android.yml` workflow are published as releases tagged `android-<versionCode>`. The app checks them on start and from Settings, and installs a newer APK through Android's package installer once its SHA-256 matches the digest GitHub reports. Run `tools/setup-android-release.ps1` once to create the release key and the signing secrets.
 
 ## Attribution
 

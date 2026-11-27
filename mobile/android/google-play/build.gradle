@@ -26,7 +26,6 @@ android {
                 new File(ferryGenerated, 'java'),
                 slintJava,
                 '../src/features/player/ui',
-                '../src/features/account/ui',
                 '../src/features/updater/ui'
             )
             jniLibs.srcDir new File(ferryInputs, 'jniLibs')
@@ -44,8 +43,4 @@ android {
             keepDebugSymbols += ['**/libstream_tube_android.so']
         }
     }
-}
-
-dependencies {
-    implementation 'com.google.android.gms:play-services-auth:22.0.0'
 }

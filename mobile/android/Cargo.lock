@@ -4336,6 +4336,7 @@ name = "stream-tube-android"
 version = "0.1.0"
 dependencies = [
  "android-build",
+ "base64 0.22.1",
  "image",
  "jni 0.22.4",
  "rustferry",

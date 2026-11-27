@@ -1,4 +1,4 @@
-import { AboutSlint, LineEdit, ListView, ScrollView, Palette } from "std-widgets.slint";
+import { AboutSlint, LineEdit, ListView, ScrollView, Palette, Spinner } from "std-widgets.slint";
 
 export enum Screen { home, shorts, following, library, search, settings, channel, playlist, language }
 
@@ -69,6 +69,9 @@ component Action inherits Rectangle {
     background: active ?
         (selected || accent ? (touch.pressed ? #ac1f36 : #c8203c) : (touch.pressed ? #363740 : #232429))
         : #1d1e23;
+    opacity: touch.pressed ? 0.82 : 1;
+    animate background { duration: 160ms; easing: ease-out; }
+    animate opacity { duration: 90ms; easing: ease-out; }
     border-color: #f36b82;
     border-width: keyboard.has-focus ? 1px : 0px;
     accessible-role: button;
@@ -116,6 +119,7 @@ component NavigationItem inherits Rectangle {
     height: 53px;
     border-radius: 9px;
     background: selected ? #331e27 : (touch.pressed ? #282930 : transparent);
+    animate background { duration: 220ms; easing: ease-out; }
     accessible-role: button;
     accessible-label: label;
     border-color: #f36b82;
@@ -129,6 +133,8 @@ component NavigationItem inherits Rectangle {
                 width: 21px;
                 height: 21px;
                 x: (parent.width - self.width) / 2;
+                y: root.selected ? -2px : 0px;
+                animate y { duration: 260ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
                 glyph: root.glyph;
                 tint: root.selected ? #ff708b : #ccccd5;
             }
@@ -138,6 +144,7 @@ component NavigationItem inherits Rectangle {
             font-size: 11px;
             font-weight: root.selected ? 700 : 500;
             color: root.selected ? #fff2f4 : #bcbcc7;
+            animate color { duration: 220ms; easing: ease-out; }
             horizontal-alignment: center;
         }
     }
@@ -160,6 +167,7 @@ component LanguageItem inherits Rectangle {
     height: 57px;
     border-radius: 8px;
     background: root.selected ? #30212a : touch.pressed ? #2d2d33 : transparent;
+    animate background { duration: 180ms; easing: ease-out; }
     border-width: keyboard.has-focus ? 1px : 0px;
     border-color: #f36b82;
     accessible-role: button;
@@ -212,6 +220,9 @@ component VideoCard inherits Rectangle {
     property <length> frame-height: min(self.width * 9 / 16, 255px);
     height: frame-height + 103px;
     clip: true;
+    opacity: 0;
+    init => { self.opacity = 1; }
+    animate opacity { duration: 200ms; easing: ease-out; }
 
     VerticalLayout {
         spacing: 7px;
@@ -231,6 +242,13 @@ component VideoCard inherits Rectangle {
                 height: parent.height;
                 source: root.video.thumbnail;
                 image-fit: cover;
+                opacity: 0;
+                init => { self.opacity = 1; }
+                animate opacity { duration: 260ms; easing: ease-out; }
+            }
+            Rectangle {
+                background: preview-touch.pressed ? #00000052 : #00000000;
+                animate background { duration: 120ms; easing: ease-out; }
             }
             if !root.video.has-thumbnail: Text {
                 text: "▶";
@@ -263,7 +281,7 @@ component VideoCard inherits Rectangle {
                     reject
                 }
             }
-            TouchArea { clicked => { root.watch(); } }
+            preview-touch := TouchArea { clicked => { root.watch(); } }
         }
 
         HorizontalLayout {
@@ -325,6 +343,55 @@ component VideoCard inherits Rectangle {
     }
 }
 
+component SignInCode inherits Rectangle {
+    in property <string> code;
+    callback open;
+    callback cancel;
+
+    border-radius: 12px;
+    background: #232429;
+    border-width: 1px;
+    border-color: #4a2a35;
+    opacity: 0;
+    init => { self.opacity = 1; }
+    animate opacity { duration: 220ms; easing: ease-out; }
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 9px;
+        Text {
+            text: UiText.tr("Confirm this code on youtube.com/activate");
+            color: #c3c2ce;
+            font-size: 13px;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.code;
+            color: #ffffff;
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: 3px;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            height: 44px;
+            Action {
+                horizontal-stretch: 1;
+                label: UiText.tr("Open youtube.com/activate");
+                accent: true;
+                pressed => { root.open(); }
+            }
+            Action {
+                width: 90px;
+                label: UiText.tr("Cancel");
+                pressed => { root.cancel(); }
+            }
+        }
+    }
+}
+
 export component StreamTube inherits Window {
     title: "Stream Tube";
     min-width: 288px;
@@ -360,6 +427,7 @@ export component StreamTube inherits Window {
     in property <bool> account-busy;
     in property <string> account-name;
     in property <string> account-message;
+    in property <string> account-code;
     in property <string> app-version;
     // 0 idle, 1 checking, 2 up to date, 3 available, 4 downloading, 5 confirming, 6 failed
     in property <int> update-state;
@@ -397,6 +465,8 @@ export component StreamTube inherits Window {
     callback refresh-account;
     callback disconnect-account;
     callback account-result(int, int, string, string);
+    callback cancel-sign-in;
+    callback open-activation;
     callback check-updates;
     callback install-update;
 
@@ -526,6 +596,12 @@ export component StreamTube inherits Window {
             pressed => { root.authorize-account(); }
         }
 
+        if root.screen == Screen.following && root.account-code != "": SignInCode {
+            code: root.account-code;
+            open => { root.open-activation(); }
+            cancel => { root.cancel-sign-in(); }
+        }
+
         if root.screen == Screen.following && root.account-message != "": Text {
             text: UiText.tr(root.account-message);
             color: #e6b3bf;
@@ -585,6 +661,9 @@ export component StreamTube inherits Window {
 
         if root.screen == Screen.settings: ScrollView {
             vertical-stretch: 1;
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: 200ms; easing: ease-out; }
             mouse-drag-pan-enabled: true;
             viewport-height: preferences.preferred-height;
             preferences := VerticalLayout {
@@ -606,6 +685,11 @@ export component StreamTube inherits Window {
                     accent: !root.account-connected;
                     active: !root.account-busy;
                     pressed => { root.authorize-account(); }
+                }
+                if root.account-code != "": SignInCode {
+                    code: root.account-code;
+                    open => { root.open-activation(); }
+                    cancel => { root.cancel-sign-in(); }
                 }
                 if root.account-connected: HorizontalLayout {
                     spacing: 6px;
@@ -713,6 +797,9 @@ export component StreamTube inherits Window {
 
         if root.screen == Screen.language: ListView {
             vertical-stretch: 1;
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: 200ms; easing: ease-out; }
             mouse-drag-pan-enabled: true;
             for locale[index] in root.languages: LanguageItem {
                 entry: locale;
@@ -723,6 +810,9 @@ export component StreamTube inherits Window {
 
         if root.showing-channels && root.channels.length > 0: ListView {
             vertical-stretch: 1;
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: 200ms; easing: ease-out; }
             mouse-drag-pan-enabled: true;
             for channel in root.channels: Action {
                 height: 51px;
@@ -736,11 +826,21 @@ export component StreamTube inherits Window {
             vertical-stretch: 1;
             padding-top: 11px;
             spacing: 9px;
+            if root.busy: HorizontalLayout {
+                alignment: center;
+                height: 40px;
+                Spinner {
+                    width: 32px;
+                    height: 32px;
+                    indeterminate: true;
+                }
+            }
             Text {
                 text: UiText.tr(root.message);
                 color: #c3c2ce;
                 font-size: 14px;
                 wrap: word-wrap;
+                horizontal-alignment: root.busy ? center : left;
             }
             if root.failed: Action {
                 label: UiText.tr("Retry");
@@ -767,6 +867,8 @@ export component StreamTube inherits Window {
         if root.screen != Screen.settings && root.screen != Screen.shorts
             && !root.showing-channels && root.videos.length > 0: list := ListView {
             vertical-stretch: 1;
+            opacity: root.busy ? 0.35 : 1;
+            animate opacity { duration: 220ms; easing: ease-out; }
             mouse-drag-pan-enabled: true;
             scrolled => {
                 if root.has-more && !root.loading-more && !root.load-more-failed
@@ -795,6 +897,9 @@ export component StreamTube inherits Window {
             height: 52px;
             border-radius: 9px;
             background: #232429;
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: 240ms; easing: ease-out; }
             HorizontalLayout {
                 padding: 4px;
                 padding-left: 12px;

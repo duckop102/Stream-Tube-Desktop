@@ -13,6 +13,7 @@ name = "stream_tube_android"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 rustferry = { version = "=0.1.0", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
