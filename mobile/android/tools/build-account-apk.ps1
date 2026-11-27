@@ -61,6 +61,8 @@ $slintJava = Join-Path (Split-Path -Parent $androidSlint.manifest_path) 'java'
 
 $nativeLibraries = @(
     @{ abi = 'arm64-v8a'; target = 'aarch64-linux-android' },
+    # older 32-bit phones
+    @{ abi = 'armeabi-v7a'; target = 'armv7-linux-androideabi' },
     @{ abi = 'x86_64'; target = 'x86_64-linux-android' }
 )
 foreach ($library in $nativeLibraries) {
