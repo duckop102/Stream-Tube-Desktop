@@ -1,4 +1,8 @@
-use super::{Category, Client, Page, is_channel_id, is_video_id};
+use super::{
+    Category, Client, Page,
+    api::{shuffle, stir},
+    is_channel_id, is_video_id,
+};
 use crate::{
     entities::{Channel, Video},
     shared::i18n::Language,
@@ -14,8 +18,9 @@ pub struct Interests {
 
 impl Interests {
     pub fn new(history: &[Video], searches: &[String], subscribed: Vec<Channel>) -> Self {
+        // each visit draws its seeds from the recent past, so Home changes like YouTube's does
         let mut channels = HashSet::new();
-        let related = history
+        let mut related: Vec<String> = history
             .iter()
             .filter(|video| !video.short && is_video_id(&video.id))
             .filter(|video| {
@@ -27,17 +32,24 @@ impl Interests {
                 };
                 channels.insert(key)
             })
-            .take(3)
+            .take(12)
             .map(|video| video.id.clone())
             .collect();
+        shuffle(&mut related);
+        related.truncate(3);
+        let mut searches: Vec<String> = searches.iter().take(8).cloned().collect();
+        shuffle(&mut searches);
+        searches.truncate(2);
+        let mut subscribed: Vec<Channel> = subscribed
+            .into_iter()
+            .filter(|c| is_channel_id(&c.id))
+            .collect();
+        shuffle(&mut subscribed);
+        subscribed.truncate(4);
         Self {
             related,
-            searches: searches.iter().take(2).cloned().collect(),
-            subscribed: subscribed
-                .into_iter()
-                .filter(|c| is_channel_id(&c.id))
-                .take(4)
-                .collect(),
+            searches,
+            subscribed,
             watched: history.iter().map(|video| video.id.clone()).collect(),
         }
     }
@@ -84,6 +96,10 @@ impl Interests {
                 sources.push(base.videos.clone());
             }
         }
+        for feed in &mut sources {
+            stir(feed);
+        }
+        shuffle(&mut sources);
         let mut seen = self.watched;
         let mut videos = Vec::new();
         for index in 0..12 {

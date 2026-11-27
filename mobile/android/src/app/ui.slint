@@ -414,7 +414,8 @@ component VideoCard inherits Rectangle {
             spacing: 4px;
             title := Text {
                 text: root.video.title;
-                max-height: 40px;
+                // two lines at most, as on YouTube
+                height: min(self.preferred-height, 40px);
                 horizontal-alignment: left;
                 vertical-alignment: top;
                 color: Theme.text;
@@ -448,7 +449,7 @@ component ShortCard inherits Rectangle {
     in property <VideoRow> video;
     callback watch;
     width: 156px;
-    height: 277px;
+    height: self.width * 16 / 9;
     border-radius: 12px;
     clip: true;
     background: Theme.surface;
@@ -493,10 +494,21 @@ component ShortCard inherits Rectangle {
     touch := TouchArea { clicked => { root.watch(); } }
 }
 
+// About two Shorts per screen with the next one peeking, as on YouTube.
+global ShortsMetrics {
+    public pure function card-width(shelf: length) -> length {
+        return min(220px, (shelf - 32px) / 2 * 0.94);
+    }
+    public pure function shelf-height(shelf: length) -> length {
+        return self.card-width(shelf) * 16 / 9 + 52px;
+    }
+}
+
 component ShortsShelf inherits Rectangle {
     in property <[VideoRow]> shorts;
     callback watch(string);
-    height: 340px;
+    property <length> card-width: ShortsMetrics.card-width(self.width);
+    height: ShortsMetrics.shelf-height(self.width);
     VerticalLayout {
         padding-top: 4px;
         spacing: 12px;
@@ -504,12 +516,25 @@ component ShortsShelf inherits Rectangle {
             padding-left: 12px;
             spacing: 8px;
             height: 26px;
-            Symbol {
+            // the red Shorts mark with its white play sign
+            Rectangle {
                 width: 24px;
                 height: 24px;
-                glyph: Glyph.shorts;
-                tint: Theme.accent;
-                filled: false;
+                Symbol {
+                    width: 24px;
+                    height: 24px;
+                    glyph: Glyph.shorts;
+                    tint: #ff0033;
+                    filled: true;
+                }
+                Path {
+                    width: 24px;
+                    height: 24px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    fill: #ffffff;
+                    commands: "M 10.3 8.8 L 14.8 12 L 10.3 15.2 Z";
+                }
             }
             Text {
                 text: UiText.tr("Shorts");
@@ -520,13 +545,14 @@ component ShortsShelf inherits Rectangle {
             }
         }
         Flickable {
-            height: 277px;
+            height: root.card-width * 16 / 9;
             viewport-width: row.preferred-width;
             row := HorizontalLayout {
                 padding-left: 12px;
                 padding-right: 12px;
                 spacing: 8px;
                 for short in root.shorts: ShortCard {
+                    width: root.card-width;
                     video: short;
                     watch => { root.watch(short.id); }
                 }
@@ -1726,7 +1752,7 @@ export component StreamTube inherits Window {
             }
             for video in root.videos: Rectangle {
                 width: list.visible-width;
-                height: video.kind == 1 ? 352px : card.height + 8px;
+                height: video.kind == 1 ? ShortsMetrics.shelf-height(self.width) + 12px : card.height + 8px;
                 if video.kind == 1: ShortsShelf {
                     width: parent.width;
                     shorts: root.shorts-shelf;

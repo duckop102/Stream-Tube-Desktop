@@ -25,19 +25,87 @@ pub enum Category {
 }
 
 impl Category {
-    fn query(self, russian: bool) -> &'static str {
+    /// Searches that stand in for a category feed. Each visit picks one, so the
+    /// feed changes the way YouTube's Home does instead of repeating one search.
+    fn queries(self, russian: bool) -> &'static [&'static str] {
         match (self, russian) {
-            (Self::All, false) => "popular videos this week",
-            (Self::All, true) => "популярные видео за неделю",
-            (Self::Music, false) => "new music official video",
-            (Self::Music, true) => "новая музыка клипы",
-            (Self::Games, false) => "gaming new releases gameplay",
-            (Self::Games, true) => "новинки игр геймплей",
-            (Self::Tech, false) => "technology news",
-            (Self::Tech, true) => "новости технологий",
-            (Self::Live, false) => "live stream now",
-            (Self::Live, true) => "прямой эфир сейчас",
+            (Self::All, false) => &[
+                "popular videos this week",
+                "trending videos today",
+                "most viewed videos this week",
+                "viral videos this week",
+                "new videos today",
+                "best videos this month",
+                "funny videos this week",
+                "must watch videos",
+            ],
+            (Self::All, true) => &[
+                "популярные видео за неделю",
+                "тренды сегодня",
+                "самые просматриваемые видео недели",
+                "новые видео сегодня",
+            ],
+            (Self::Music, false) => &[
+                "new music official video",
+                "new songs this week",
+                "top hits official music video",
+                "new music releases",
+            ],
+            (Self::Music, true) => &["новая музыка клипы", "новые песни недели"],
+            (Self::Games, false) => &[
+                "gaming new releases gameplay",
+                "new game trailers",
+                "gaming highlights this week",
+                "best gameplay moments",
+            ],
+            (Self::Games, true) => &["новинки игр геймплей", "игровые новости"],
+            (Self::Tech, false) => &[
+                "technology news",
+                "tech review new phone",
+                "tech news this week",
+                "gadget reviews",
+            ],
+            (Self::Tech, true) => &["новости технологий", "обзор гаджетов"],
+            (Self::Live, false) => &["live stream now", "live now", "live news now"],
+            (Self::Live, true) => &["прямой эфир сейчас"],
         }
+    }
+
+    fn query(self, russian: bool) -> &'static str {
+        let queries = self.queries(russian);
+        queries[random(queries.len())]
+    }
+}
+
+/// A number below `bound` that changes on every call. Enough to vary feeds; not for anything secret.
+pub(crate) fn random(bound: usize) -> usize {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STATE: AtomicU64 = AtomicU64::new(0);
+    if bound <= 1 {
+        return 0;
+    }
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+    let mut x = STATE.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed) ^ time;
+    // splitmix64
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x % bound as u64) as usize
+}
+
+/// Shuffles in place (Fisher-Yates).
+pub(crate) fn shuffle<T>(items: &mut [T]) {
+    for index in (1..items.len()).rev() {
+        items.swap(index, random(index + 1));
+    }
+}
+
+/// Mixes a feed a little: the first few stay near the top but not in the same order.
+pub(crate) fn stir<T>(items: &mut [T]) {
+    for window in items.chunks_mut(4) {
+        shuffle(window);
     }
 }
 
@@ -83,18 +151,26 @@ impl Client {
                 return Some(videos);
             }
         }
-        self.search(category.query(self.language == Language::Russian), false)
+        let mut page = self.search(category.query(self.language == Language::Russian), false)?;
+        stir(&mut page.videos);
+        Some(page)
     }
 
     pub fn shorts(&self) -> Option<Page> {
-        self.search(
-            if self.language == Language::Russian {
-                "популярные shorts"
-            } else {
-                "popular YouTube Shorts"
-            },
-            true,
-        )
+        let queries: &[&str] = if self.language == Language::Russian {
+            &["популярные shorts", "смешные shorts", "новые shorts"]
+        } else {
+            &[
+                "popular YouTube Shorts",
+                "trending shorts today",
+                "funny shorts",
+                "viral shorts this week",
+                "satisfying shorts",
+            ]
+        };
+        let mut page = self.search(queries[random(queries.len())], true)?;
+        stir(&mut page.videos);
+        Some(page)
     }
 
     pub fn search(&self, query: &str, shorts: bool) -> Option<Page> {
