@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside the emulator job: Home, the Shorts player, a watch page; capture each.
+# Runs inside the emulator job: background playback of a watch page; capture each step.
 set -x
 mkdir -p out
 adb install -r app.apk
@@ -8,43 +8,42 @@ sleep 40
 CLOSE="adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS"
 $CLOSE
 PKG=io.github.shiroksh.streamtube
+adb shell dumpsys package $PKG | grep -iE "permission|PlaybackService" > out/package.txt
 adb logcat -c
 adb shell monkey -p $PKG -c android.intent.category.LAUNCHER 1
 sleep 35
 adb exec-out screencap -p > out/1-home.png
 SIZE=$(adb shell wm size | grep -o '[0-9]*x[0-9]*' | tail -1); W=${SIZE%x*}; H=${SIZE#*x}
 $CLOSE
-# Shorts tab opens the Shorts player
-adb shell input tap $((W*375/1000)) $((H*955/1000))
-sleep 25
-adb exec-out screencap -p > out/2-shorts.png
-sleep 10
-adb exec-out screencap -p > out/3-shorts-later.png
-adb shell input swipe $((W/2)) $((H*70/100)) $((W/2)) $((H*25/100)) 250
-sleep 12
-adb exec-out screencap -p > out/4-shorts-next.png
-adb shell input keyevent 4
-sleep 3
-$CLOSE
-adb shell input tap $((W*125/1000)) $((H*955/1000))
-sleep 10
-adb exec-out screencap -p > out/5-home-again.png
+# a fling down the feed and back
+adb shell input swipe $((W/2)) $((H*80/100)) $((W/2)) $((H*20/100)) 120
+sleep 2
+adb exec-out screencap -p > out/2-scrolled.png
+adb shell input swipe $((W/2)) $((H*20/100)) $((W/2)) $((H*80/100)) 120
+sleep 2
+# open the first video
 adb shell input tap $((W/2)) $((H*30/100))
 sleep 20
-adb exec-out screencap -p > out/6-watch.png
-sleep 15
-adb exec-out screencap -p > out/7-watch-later.png
-adb shell dumpsys meminfo $PKG | head -40 > out/meminfo.txt
-# a second cold start opens on the remembered Home before the network answers
-adb shell am force-stop $PKG
-# without a network only the remembered Home can be on screen
-adb shell svc wifi disable
-adb shell svc data disable
-$CLOSE
+adb exec-out screencap -p > out/3-watch.png
+adb shell dumpsys media_session > out/media-session-open.txt
+adb shell dumpsys activity services $PKG > out/services-open.txt
+# leave the app: the video should go on in the background
+adb shell input keyevent 3
+sleep 10
+adb shell dumpsys activity services $PKG > out/services-background.txt
+adb shell dumpsys media_session > out/media-session-background.txt
+adb shell cmd statusbar expand-notifications
+sleep 3
+adb exec-out screencap -p > out/4-notifications.png
+adb shell cmd statusbar collapse
+adb shell dumpsys notification --noredact | grep -A30 "pkg=$PKG" > out/notification.txt
+# back to the app
 adb shell monkey -p $PKG -c android.intent.category.LAUNCHER 1
-sleep 4
-adb exec-out screencap -p > out/8-cold-start-4s.png
-sleep 30
-adb exec-out screencap -p > out/9-cold-start-later.png
+sleep 6
+adb exec-out screencap -p > out/5-back.png
+# swipe the app away: the service should end
+adb shell am force-stop $PKG
+sleep 3
+adb shell dumpsys activity services $PKG > out/services-after-stop.txt
 adb logcat -d > out/logcat.txt
 exit 0
