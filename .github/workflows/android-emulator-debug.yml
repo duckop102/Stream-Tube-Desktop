@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      APK_URL: https://github.com/duckop102/Stream-Tube-Desktop/releases/download/android-10015/Stream-Tube-Android-0.1.0-b15.apk
+      APK_URL: https://github.com/duckop102/Stream-Tube-Desktop/releases/download/android-10017/Stream-Tube-Android-0.1.0-b17.apk
     steps:
       - uses: actions/checkout@v5
       - name: Enable KVM
