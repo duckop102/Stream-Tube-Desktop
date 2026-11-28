@@ -872,6 +872,8 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         page.view().setVisibility(!mini && !wide ? View.VISIBLE : View.GONE);
         backdrop.setVisibility(!mini && !wide ? View.VISIBLE : View.GONE);
         backdropShade.setVisibility(backdrop.getVisibility());
+        // an error's text doesn't fit the mini player's small picture
+        errorBox.setAlpha(mini ? 0f : 1f);
         updateDrift();
         miniBar.setVisibility(mini ? View.VISIBLE : View.GONE);
         miniProgress.setVisibility(mini ? View.VISIBLE : View.GONE);
@@ -1140,7 +1142,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         int base = BACKGROUND & 0x00FFFFFF;
         backdropShade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
             light ? new int[]{base | 0x99000000, base | 0xE0000000, base | 0xF5000000}
-                : new int[]{base | 0x73000000, base | 0xCC000000, base | 0xF0000000}));
+                : new int[]{base | 0x59000000, base | 0xB3000000, base | 0xE6000000}));
         root.addView(backdropShade, new FrameLayout.LayoutParams(-1, -1));
     }
 
