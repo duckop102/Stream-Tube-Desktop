@@ -37,13 +37,32 @@ $gradleManifest.DocumentElement.RemoveAttribute('package')
 $app = $gradleManifest.SelectSingleNode('/manifest/application')
 $app.RemoveAttribute('debuggable', $androidNamespace)
 $app.RemoveAttribute('extractNativeLibs', $androidNamespace)
-# In-app updates hand the downloaded APK to PackageInstaller.
-$installPermission = 'android.permission.REQUEST_INSTALL_PACKAGES'
-if (-not $gradleManifest.SelectSingleNode("/manifest/uses-permission[@*[local-name()='name']='$installPermission']")) {
-    $permission = $gradleManifest.CreateElement('uses-permission')
-    $permission.SetAttribute('name', $androidNamespace, $installPermission) | Out-Null
-    $gradleManifest.DocumentElement.InsertBefore($permission, $app) | Out-Null
+# In-app updates hand the downloaded APK to PackageInstaller. Background playback runs a
+# media foreground service and keeps streaming with the screen off.
+$permissions = @(
+    'android.permission.REQUEST_INSTALL_PACKAGES',
+    'android.permission.FOREGROUND_SERVICE',
+    'android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK',
+    'android.permission.WAKE_LOCK'
+)
+foreach ($name in $permissions) {
+    if (-not $gradleManifest.SelectSingleNode("/manifest/uses-permission[@*[local-name()='name']='$name']")) {
+        $permission = $gradleManifest.CreateElement('uses-permission')
+        $permission.SetAttribute('name', $androidNamespace, $name) | Out-Null
+        $gradleManifest.DocumentElement.InsertBefore($permission, $app) | Out-Null
+    }
 }
+# The service that hosts the player's media session (src/features/player/ui/PlaybackService.java).
+$service = $gradleManifest.CreateElement('service')
+$service.SetAttribute('name', $androidNamespace, 'io.github.shiroksh.streamtube.PlaybackService') | Out-Null
+$service.SetAttribute('exported', $androidNamespace, 'true') | Out-Null
+$service.SetAttribute('foregroundServiceType', $androidNamespace, 'mediaPlayback') | Out-Null
+$filter = $gradleManifest.CreateElement('intent-filter')
+$action = $gradleManifest.CreateElement('action')
+$action.SetAttribute('name', $androidNamespace, 'androidx.media3.session.MediaSessionService') | Out-Null
+$filter.AppendChild($action) | Out-Null
+$service.AppendChild($filter) | Out-Null
+$app.AppendChild($service) | Out-Null
 # Adaptive launcher icon from google-play/launcher-res, so launchers mask it instead of cropping.
 $icon = '@mipmap/ic_stream_tube'
 $app.SetAttribute('icon', $androidNamespace, $icon) | Out-Null

@@ -240,9 +240,6 @@ component Avatar inherits Rectangle {
         height: root.height;
         source: root.source;
         image-fit: cover;
-        opacity: 0;
-        init => { self.opacity = 1; }
-        animate opacity { duration: 220ms; easing: ease-out; }
     }
 }
 
@@ -372,9 +369,6 @@ component VideoCard inherits Rectangle {
     callback open-channel;
     property <length> frame-height: self.width * 9 / 16;
     height: frame-height + panel.height;
-    opacity: 0;
-    init => { self.opacity = 1; }
-    animate opacity { duration: 220ms; easing: ease-out; }
 
     preview := Rectangle {
         y: 0;
@@ -388,9 +382,6 @@ component VideoCard inherits Rectangle {
             height: parent.height;
             source: root.video.thumbnail;
             image-fit: cover;
-            opacity: 0;
-            init => { self.opacity = 1; }
-            animate opacity { duration: 260ms; easing: ease-out; }
         }
         if root.video.duration != "": Rectangle {
             x: parent.width - self.width - 12px;
@@ -530,9 +521,6 @@ component ShortCard inherits Rectangle {
         height: parent.height;
         source: root.video.thumbnail;
         image-fit: cover;
-        opacity: 0;
-        init => { self.opacity = 1; }
-        animate opacity { duration: 260ms; easing: ease-out; }
     }
     Rectangle {
         y: parent.height - self.height;
@@ -669,9 +657,6 @@ component MiniCard inherits Rectangle {
                 height: parent.height;
                 source: root.video.thumbnail;
                 image-fit: cover;
-                opacity: 0;
-                init => { self.opacity = 1; }
-                animate opacity { duration: 260ms; easing: ease-out; }
             }
             if root.video.duration != "": Rectangle {
                 x: parent.width - self.width - 5px;

@@ -51,4 +51,6 @@ dependencies {
     // The native watch page plays YouTube's HLS manifests (see src/features/player).
     implementation 'androidx.media3:media3-exoplayer:1.11.1'
     implementation 'androidx.media3:media3-exoplayer-hls:1.11.1'
+    // Background playback: the media notification, lock screen and headset controls.
+    implementation 'androidx.media3:media3-session:1.11.1'
 }

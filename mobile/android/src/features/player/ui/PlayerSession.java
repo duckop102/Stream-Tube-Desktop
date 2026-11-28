@@ -3,6 +3,7 @@ package io.github.shiroksh.streamtube;
 import android.app.Activity;
 import android.app.Application;
 import android.app.Dialog;
+import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
@@ -11,6 +12,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -18,6 +20,7 @@ import android.os.Looper;
 import android.text.TextUtils;
 import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.TextureView;
 import android.view.View;
@@ -37,6 +40,7 @@ import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.TrackSelectionOverride;
@@ -47,6 +51,13 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
+import androidx.media3.session.CommandButton;
+import androidx.media3.session.MediaSession;
+import androidx.media3.session.SessionCommand;
+import androidx.media3.session.SessionCommands;
+import androidx.media3.session.SessionResult;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -67,6 +78,9 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     private static final int MINI_VIDEO_WIDTH = 114;
     private static final int BOTTOM_NAVIGATION = 56;
     private static final float[] SPEEDS = {0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f};
+    // the notification's and lock screen's previous and next buttons
+    private static final SessionCommand NEXT = new SessionCommand("stream-tube.next", Bundle.EMPTY);
+    private static final SessionCommand PREVIOUS = new SessionCommand("stream-tube.previous", Bundle.EMPTY);
 
     final Activity activity;
     final int session;
@@ -92,6 +106,9 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     private final FrameLayout sheetLayer;
     private final Set<Integer> skipped = new HashSet<>();
     private final int originalOrientation;
+    // lets the video go on in the background, with its notification; none for Shorts
+    private MediaSession mediaSession;
+    private boolean background;
 
     // watch page
     private Controls controls;
@@ -143,8 +160,13 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         player.setAudioAttributes(new AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true);
         player.setHandleAudioBecomingNoisy(true);
+        // keeps streaming with the screen off
+        player.setWakeMode(C.WAKE_MODE_NETWORK);
         player.setRepeatMode(shorts ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
         player.addListener(this);
+        if (!shorts) {
+            mediaSession = buildMediaSession();
+        }
 
         root = new FrameLayout(activity) {
             @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
@@ -248,6 +270,9 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             applyWindow();
         }
         activity.getApplication().registerActivityLifecycleCallbacks(this);
+        if (mediaSession != null) {
+            PlaybackService.attach(activity, mediaSession);
+        }
         watch();
         handler.post(tick);
     }
@@ -273,6 +298,11 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         handler.removeCallbacksAndMessages(null);
         activity.getApplication().unregisterActivityLifecycleCallbacks(this);
         player.removeListener(this);
+        if (mediaSession != null) {
+            PlaybackService.detach(mediaSession);
+            mediaSession.release();
+            mediaSession = null;
+        }
         player.release();
         activity.setRequestedOrientation(originalOrientation);
         if (VideoPlayer.active == this) {
@@ -350,9 +380,16 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(20000);
+        VideoPlayer.Track track = track();
+        // what the notification and lock screen show
+        MediaMetadata metadata = new MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(track.channel)
+            .setArtworkUri(Uri.parse("https://i.ytimg.com/vi/" + track.id + "/hqdefault.jpg"))
+            .build();
         HlsMediaSource source = new HlsMediaSource.Factory(http)
             .setAllowChunklessPreparation(true)
-            .createMediaSource(MediaItem.fromUri(url));
+            .createMediaSource(new MediaItem.Builder().setUri(url).setMediaMetadata(metadata).build());
         if (live) {
             player.setMediaSource(source);
         } else {
@@ -1192,8 +1229,24 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     // ───────────── lifecycle ─────────────
 
     @Override public void onActivityStopped(Activity host) {
-        if (host == activity) {
+        if (host != activity) {
+            return;
+        }
+        if (mediaSession == null) {
             player.pause();
+            return;
+        }
+        // the video goes on as sound; a small picture is enough until the app is back
+        background = true;
+        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+            .setMaxVideoSize(426, 240).build());
+    }
+
+    @Override public void onActivityStarted(Activity host) {
+        if (host == activity && background) {
+            background = false;
+            player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+                .clearVideoSizeConstraints().build());
         }
     }
 
@@ -1204,10 +1257,104 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     }
 
     @Override public void onActivityCreated(Activity host, Bundle saved) {}
-    @Override public void onActivityStarted(Activity host) {}
     @Override public void onActivityResumed(Activity host) {}
     @Override public void onActivityPaused(Activity host) {}
     @Override public void onActivitySaveInstanceState(Activity host, Bundle out) {}
+
+    // ───────────── background playback ─────────────
+
+    private MediaSession buildMediaSession() {
+        List<CommandButton> buttons = new ArrayList<>();
+        buttons.add(new CommandButton.Builder(CommandButton.ICON_PREVIOUS)
+            .setSessionCommand(PREVIOUS)
+            .setDisplayName(text("Previous"))
+            .setSlots(CommandButton.SLOT_BACK)
+            .build());
+        buttons.add(new CommandButton.Builder(CommandButton.ICON_NEXT)
+            .setSessionCommand(NEXT)
+            .setDisplayName(text("Next"))
+            .setSlots(CommandButton.SLOT_FORWARD)
+            .build());
+        MediaSession.Builder builder = new MediaSession.Builder(activity, player)
+            .setId("stream-tube-" + session)
+            .setMediaButtonPreferences(buttons)
+            .setCallback(new SessionCallback());
+        // tapping the notification brings the app back
+        Intent open = activity.getPackageManager().getLaunchIntentForPackage(activity.getPackageName());
+        if (open != null) {
+            open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            builder.setSessionActivity(PendingIntent.getActivity(activity, 0, open,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+        }
+        try {
+            return builder.build();
+        } catch (RuntimeException failed) {
+            // the video plays while the app is open
+            return null;
+        }
+    }
+
+    /** Previous or next from the notification, lock screen or a headset. */
+    private void skip(int direction) {
+        handler.post(() -> {
+            if (dismissed) {
+                return;
+            }
+            if (direction < 0 && (index == 0 || player.getCurrentPosition() > 3000)) {
+                player.seekTo(0);
+            } else {
+                move(direction);
+            }
+        });
+    }
+
+    private final class SessionCallback implements MediaSession.Callback {
+        private MediaSession.ConnectionResult accept(MediaSession owner, MediaSession.ControllerInfo controller) {
+            SessionCommands commands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                .add(NEXT)
+                .add(PREVIOUS)
+                .build();
+            return new MediaSession.ConnectionResult.AcceptedResultBuilder(owner, controller)
+                .setAvailableSessionCommands(commands)
+                .build();
+        }
+
+        @Override public MediaSession.ConnectionResult onConnect(MediaSession owner,
+                                                                MediaSession.ControllerInfo controller) {
+            return accept(owner, controller);
+        }
+
+        @Override public ListenableFuture<MediaSession.ConnectionResult> onConnectAsync(
+                MediaSession owner, MediaSession.ControllerInfo controller) {
+            return Futures.immediateFuture(accept(owner, controller));
+        }
+
+        @Override public ListenableFuture<SessionResult> onCustomCommand(MediaSession owner,
+                MediaSession.ControllerInfo controller, SessionCommand command, Bundle args) {
+            if (NEXT.customAction.equals(command.customAction)) {
+                skip(1);
+            } else if (PREVIOUS.customAction.equals(command.customAction)) {
+                skip(-1);
+            }
+            return Futures.immediateFuture(new SessionResult(SessionResult.RESULT_SUCCESS));
+        }
+
+        @Override public boolean onMediaButtonEvent(MediaSession owner,
+                MediaSession.ControllerInfo controller, Intent intent) {
+            KeyEvent key = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+            if (key == null) {
+                return false;
+            }
+            int code = key.getKeyCode();
+            if (code != KeyEvent.KEYCODE_MEDIA_NEXT && code != KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
+                return false;
+            }
+            if (key.getAction() == KeyEvent.ACTION_DOWN && key.getRepeatCount() == 0) {
+                skip(code == KeyEvent.KEYCODE_MEDIA_NEXT ? 1 : -1);
+            }
+            return true;
+        }
+    }
 
     // ───────────── controls over the video ─────────────
 

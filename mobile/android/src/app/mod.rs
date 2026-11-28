@@ -1722,7 +1722,7 @@ fn fetch_images(
         }
         match cached_avatar(&url) {
             Some(pixels) => {
-                let _ = target.upgrade_in_event_loop(move |ui| apply_avatar(&ui, &url, pixels));
+                deliver_picture(&target, Picture::Avatar(url, pixels));
             }
             None => jobs.push(ImageJob::Avatar(url)),
         }
@@ -1776,9 +1776,7 @@ fn fetch_images(
                                 }
                                 cache.insert(url.clone(), pixels.clone());
                             }
-                            let url = url.clone();
-                            let _ = target
-                                .upgrade_in_event_loop(move |ui| apply_avatar(&ui, &url, pixels));
+                            deliver_picture(&target, Picture::Avatar(url.clone(), pixels));
                         }
                         ImageJob::Thumbnail(id) => {
                             let branding = if extras.dearrow_titles
@@ -1811,10 +1809,7 @@ fn fetch_images(
                             if pixels.is_none() && title.is_none() {
                                 continue;
                             }
-                            let id = id.clone();
-                            let _ = target.upgrade_in_event_loop(move |ui| {
-                                apply_thumbnail(&ui, &id, pixels, title)
-                            });
+                            deliver_picture(&target, Picture::Thumbnail(id.clone(), pixels, title));
                         }
                     }
                 }
@@ -1840,47 +1835,89 @@ fn video_models(ui: &StreamTube) -> [ModelRc<VideoRow>; 4] {
     ]
 }
 
-fn apply_thumbnail(
-    ui: &StreamTube,
-    id: &str,
-    pixels: Option<SharedPixelBuffer<Rgba8Pixel>>,
-    title: Option<String>,
-) {
-    let image = pixels.map(slint::Image::from_rgba8);
-    for model in video_models(ui) {
-        for index in 0..model.row_count() {
-            let Some(mut row) = model.row_data(index) else {
-                continue;
-            };
-            if row.id != id {
-                continue;
-            }
-            if let Some(image) = &image {
-                row.thumbnail = image.clone();
-                row.has_thumbnail = true;
-            }
-            if let Some(title) = &title {
-                row.title = title.into();
-            }
-            model.set_row_data(index, row);
-        }
+/// A downloaded picture on its way to the lists that show it.
+enum Picture {
+    Thumbnail(String, Option<SharedPixelBuffer<Rgba8Pixel>>, Option<String>),
+    Avatar(String, SharedPixelBuffer<Rgba8Pixel>),
+}
+
+/// Pictures that arrived since the interface last took them.
+static PICTURES: Mutex<Vec<Picture>> = Mutex::new(Vec::new());
+/// True while the interface has been asked to take the waiting pictures.
+static PICTURES_QUEUED: AtomicBool = AtomicBool::new(false);
+
+/// Hands a picture to the interface. Pictures that arrive while it is busy go in
+/// together, so the lists change once instead of once per picture.
+fn deliver_picture(target: &slint::Weak<StreamTube>, picture: Picture) {
+    if let Ok(mut waiting) = PICTURES.lock() {
+        waiting.push(picture);
+    }
+    if !PICTURES_QUEUED.swap(true, Ordering::AcqRel) {
+        let _ = target.upgrade_in_event_loop(|ui| {
+            PICTURES_QUEUED.store(false, Ordering::Release);
+            let batch = PICTURES.lock().map(|mut waiting| std::mem::take(&mut *waiting)).unwrap_or_default();
+            apply_pictures(&ui, batch);
+        });
     }
 }
 
-fn apply_avatar(ui: &StreamTube, url: &str, pixels: SharedPixelBuffer<Rgba8Pixel>) {
-    let image = slint::Image::from_rgba8(pixels);
+fn apply_pictures(ui: &StreamTube, batch: Vec<Picture>) {
+    let mut thumbnails: HashMap<String, (Option<slint::Image>, Option<String>)> = HashMap::new();
+    let mut avatars: HashMap<String, slint::Image> = HashMap::new();
+    for picture in batch {
+        match picture {
+            Picture::Thumbnail(id, pixels, title) => {
+                let entry = thumbnails.entry(id).or_default();
+                if let Some(pixels) = pixels {
+                    entry.0 = Some(slint::Image::from_rgba8(pixels));
+                }
+                if title.is_some() {
+                    entry.1 = title;
+                }
+            }
+            Picture::Avatar(url, pixels) => {
+                avatars.insert(url, slint::Image::from_rgba8(pixels));
+            }
+        }
+    }
+    if thumbnails.is_empty() && avatars.is_empty() {
+        return;
+    }
     for model in video_models(ui) {
         for index in 0..model.row_count() {
             let Some(mut row) = model.row_data(index) else {
                 continue;
             };
-            if row.avatar_url == url && !row.has_avatar {
-                row.avatar = image.clone();
-                row.has_avatar = true;
+            let mut changed = false;
+            if let Some((image, title)) = thumbnails.get(row.id.as_str()) {
+                if let Some(image) = image {
+                    row.thumbnail = image.clone();
+                    row.has_thumbnail = true;
+                }
+                if let Some(title) = title {
+                    row.title = title.into();
+                }
+                changed = true;
+            }
+            if !row.has_avatar {
+                if let Some(image) = avatars.get(row.avatar_url.as_str()) {
+                    row.avatar = image.clone();
+                    row.has_avatar = true;
+                    changed = true;
+                }
+            }
+            if changed {
                 model.set_row_data(index, row);
             }
         }
     }
+    for (url, image) in avatars {
+        apply_avatar_elsewhere(ui, &url, image);
+    }
+}
+
+/// The places outside the video lists that show channel pictures.
+fn apply_avatar_elsewhere(ui: &StreamTube, url: &str, image: slint::Image) {
     let channels = ui.get_channels();
     for index in 0..channels.row_count() {
         let Some(mut row) = channels.row_data(index) else {
