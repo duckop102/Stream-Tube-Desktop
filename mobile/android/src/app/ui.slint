@@ -11,16 +11,22 @@ export global UiText {
     }
 }
 
-// Colours of the YouTube-style dark theme.
-global Theme {
-    out property <color> background: #0f0f0f;
-    out property <color> surface: #272727;
-    out property <color> raised: #212121;
-    out property <color> pressed: #3f3f3f;
-    out property <color> text: #f1f1f1;
-    out property <color> secondary: #aaaaaa;
-    out property <color> divider: #ffffff1a;
-    out property <color> accent: #ff4e6a;
+// The app's colours, after ytm-rs: a violet-tinted charcoal, or its light twin, and one
+// accent. Settings › Appearance picks them (StreamTube.light-theme and accent-color).
+export global Theme {
+    in-out property <bool> light;
+    in-out property <color> accent: #ff3048;
+    // text and icons drawn on the accent
+    in-out property <color> on-accent: #ffffff;
+    out property <color> background: self.light ? #f6f4f8 : #0c0a0e;
+    out property <color> surface: self.light ? #e9e5ee : #26222a;
+    out property <color> raised: self.light ? #fcfbfd : #1c1820;
+    out property <color> pressed: self.light ? #d9d4e0 : #3a3440;
+    out property <color> text: self.light ? #16141a : #f2f0f5;
+    out property <color> secondary: self.light ? #56525e : #b2acba;
+    out property <color> divider: self.light ? #16141a1a : #ffffff1a;
+    // a soft veil over any surface while it is pressed
+    out property <color> veil: self.light ? #16141a14 : #ffffff1f;
 }
 
 export struct LanguageRow {
@@ -103,7 +109,7 @@ component IconButton inherits Rectangle {
     width: 40px;
     height: 40px;
     border-radius: self.height / 2;
-    background: touch.pressed ? #ffffff26 : #ffffff00;
+    background: touch.pressed ? Theme.veil : transparent;
     animate background { duration: 140ms; easing: ease-out; }
     accessible-role: button;
     accessible-label: root.description;
@@ -118,7 +124,7 @@ component IconButton inherits Rectangle {
     touch := TouchArea { clicked => { root.pressed(); } }
 }
 
-// Generic pill button: white when primary (like Subscribe), grey otherwise.
+// Generic pill button: the accent when primary (like Subscribe), grey otherwise.
 component Pill inherits Rectangle {
     in property <string> label;
     in property <bool> primary;
@@ -127,8 +133,8 @@ component Pill inherits Rectangle {
     height: 36px;
     min-width: 64px;
     border-radius: self.height / 2;
-    background: !root.active ? #1f1f1f
-        : root.primary ? (touch.pressed ? #d9d9d9 : Theme.text)
+    background: !root.active ? Theme.surface
+        : root.primary ? (touch.pressed ? Theme.accent.darker(0.2) : Theme.accent)
         : (touch.pressed ? Theme.pressed : Theme.surface);
     animate background { duration: 140ms; easing: ease-out; }
     accessible-role: button;
@@ -138,7 +144,7 @@ component Pill inherits Rectangle {
         padding-right: 16px;
         Text {
             text: root.label;
-            color: !root.active ? #717171 : root.primary ? #0f0f0f : Theme.text;
+            color: !root.active ? Theme.secondary : root.primary ? Theme.on-accent : Theme.text;
             font-size: 14px;
             font-weight: 600;
             vertical-alignment: center;
@@ -167,7 +173,7 @@ component Chip inherits Rectangle {
         padding-right: 12px;
         Text {
             text: root.label;
-            color: root.selected ? #0f0f0f : Theme.text;
+            color: root.selected ? Theme.background : Theme.text;
             animate color { duration: 180ms; easing: ease-out; }
             font-size: 14px;
             font-weight: 500;
@@ -177,16 +183,16 @@ component Chip inherits Rectangle {
     touch := TouchArea { clicked => { root.pressed(); } }
 }
 
-// A text tab of the Home screen; the selected one sits in a dark pill.
+// A text tab of the Home screen; the selected one sits in a pill tinted with the accent.
 component Tab inherits Rectangle {
     in property <string> label;
     in property <bool> selected;
     callback pressed;
     height: 36px;
     border-radius: self.height / 2;
-    background: root.selected ? #ffffff1f : (touch.pressed ? #ffffff12 : #ffffff00);
+    background: root.selected ? Theme.accent.transparentize(0.8) : (touch.pressed ? Theme.veil : transparent);
     border-width: root.selected ? 1px : 0px;
-    border-color: #ffffff10;
+    border-color: Theme.accent.transparentize(0.55);
     animate background { duration: 160ms; easing: ease-out; }
     accessible-role: tab;
     accessible-label: root.label;
@@ -251,14 +257,14 @@ component Logo inherits HorizontalLayout {
         width: 29px;
         height: 20px;
         y: (parent.height - self.height) / 2;
-        border-radius: 5px;
-        background: #ff0033;
+        border-radius: 6px;
+        background: Theme.accent;
         Path {
             width: 9px;
             height: 10px;
             viewbox-width: 9;
             viewbox-height: 10;
-            fill: #ffffff;
+            fill: Theme.on-accent;
             commands: "M 0 0 L 9 5 L 0 10 Z";
         }
     }
@@ -291,14 +297,14 @@ component NavigationItem inherits Rectangle {
         width: 48px;
         height: 48px;
         border-radius: 24px;
-        background: touch.pressed ? #ffffff1f : #ffffff00;
+        background: touch.pressed ? Theme.veil : transparent;
         animate background { duration: 160ms; easing: ease-out; }
     }
     if !root.account: Symbol {
         width: 27px;
         height: 27px;
         glyph: root.glyph;
-        tint: Theme.text;
+        tint: root.selected ? Theme.accent : Theme.text;
         filled: root.selected;
         stroke-width: 1.7px;
     }
@@ -307,7 +313,7 @@ component NavigationItem inherits Rectangle {
         height: 28px;
         border-radius: 14px;
         border-width: root.selected ? 1.5px : 0px;
-        border-color: Theme.text;
+        border-color: Theme.accent;
         Avatar {
             width: root.selected ? 23px : 27px;
             source: root.photo;
@@ -358,8 +364,8 @@ component LanguageItem inherits Rectangle {
     touch := TouchArea { clicked => { root.pressed(); } }
 }
 
-// A video in a feed as the YouTube phone app shows it: the picture edge to edge,
-// then a dark panel with the title, the channel and the actions.
+// A video in a feed: a rounded card with the picture on top, then a panel with the
+// title, the channel and the actions.
 component VideoCard inherits Rectangle {
     in property <VideoRow> video;
     in property <length> radius: 18px;
@@ -369,6 +375,9 @@ component VideoCard inherits Rectangle {
     callback open-channel;
     property <length> frame-height: self.width * 9 / 16;
     height: frame-height + panel.height;
+    border-radius: root.radius;
+    clip: true;
+    background: Theme.raised;
 
     preview := Rectangle {
         y: 0;
@@ -409,9 +418,7 @@ component VideoCard inherits Rectangle {
     panel := Rectangle {
         y: root.frame-height;
         height: body.preferred-height;
-        background: panel-touch.pressed ? #2a2a2a : Theme.raised;
-        border-bottom-left-radius: root.radius;
-        border-bottom-right-radius: root.radius;
+        background: panel-touch.pressed ? Theme.surface : Theme.raised;
         animate background { duration: 120ms; easing: ease-out; }
         panel-touch := TouchArea { clicked => { root.watch(); } }
         body := VerticalLayout {
@@ -565,12 +572,13 @@ component ShortsShelf inherits Rectangle {
     property <length> tile-width: (self.width - 4px) / 2;
     property <length> tile-height: ShortsMetrics.tile-height(self.width);
     height: ShortsMetrics.shelf-height(self.width);
+    border-radius: 18px;
+    clip: true;
+    background: Theme.raised;
     Rectangle {
         y: 0;
         height: 60px;
         background: Theme.raised;
-        border-top-left-radius: 18px;
-        border-top-right-radius: 18px;
         Text {
             x: 16px;
             text: UiText.tr("Shorts");
@@ -586,7 +594,6 @@ component ShortsShelf inherits Rectangle {
         y: 60px + Math.floor(index / 2) * (root.tile-height + 4px);
         width: root.tile-width;
         height: root.tile-height;
-        corner: index == 2 ? 1 : index == 3 ? 2 : 0;
         video: short;
         watch => { root.watch(short.id); }
     }
@@ -597,6 +604,8 @@ component SkeletonCard inherits Rectangle {
     property <float> glow: 0.55 + 0.25 * Math.sin(animation-tick() / 1ms * 0.0045 * 1rad);
     property <length> frame-height: self.width * 9 / 16;
     height: frame-height + 116px;
+    border-radius: 18px;
+    clip: true;
     Rectangle {
         y: 0;
         height: root.frame-height;
@@ -607,8 +616,6 @@ component SkeletonCard inherits Rectangle {
         y: root.frame-height;
         height: 116px;
         background: Theme.raised;
-        border-bottom-left-radius: 18px;
-        border-bottom-right-radius: 18px;
     }
     Rectangle {
         x: 16px;
@@ -649,7 +656,7 @@ component MiniCard inherits Rectangle {
         spacing: 6px;
         Rectangle {
             height: 90px;
-            border-radius: 8px;
+            border-radius: 12px;
             clip: true;
             background: Theme.surface;
             if root.video.has-thumbnail: Image {
@@ -737,7 +744,7 @@ component SettingRow inherits Rectangle {
                 width: 36px;
                 height: 20px;
                 border-radius: 10px;
-                background: root.checked ? #3ea6ff : #717171;
+                background: root.checked ? Theme.accent : (Theme.light ? #b9b3c2 : #5a5462);
                 animate background { duration: 180ms; easing: ease-out; }
                 Rectangle {
                     x: root.checked ? parent.width - self.width - 2px : 2px;
@@ -860,7 +867,25 @@ export component StreamTube inherits Window {
     preferred-height: 820px;
     background: Theme.background;
     default-font-size: 14px;
-    init => { Palette.color-scheme = ColorScheme.dark; content-focus.focus(); }
+    init => {
+        Palette.color-scheme = root.light-theme ? ColorScheme.light : ColorScheme.dark;
+        content-focus.focus();
+    }
+
+    // Settings › Appearance
+    in property <bool> light-theme;
+    in property <color> accent-color: #ff3048;
+    in property <color> on-accent-color: #ffffff;
+    in property <[color]> accents;
+    in property <int> accent-choice;
+    callback choose-theme(bool);
+    callback choose-accent(int);
+    changed light-theme => {
+        Theme.light = self.light-theme;
+        Palette.color-scheme = self.light-theme ? ColorScheme.light : ColorScheme.dark;
+    }
+    changed accent-color => { Theme.accent = self.accent-color; }
+    changed on-accent-color => { Theme.on-accent = self.on-accent-color; }
 
     in property <[VideoRow]> videos;
     in property <[VideoRow]> shorts-shelf;
@@ -924,7 +949,7 @@ export component StreamTube inherits Window {
     property <bool> feed-screen: screen != Screen.settings && screen != Screen.language
         && screen != Screen.you && screen != Screen.shorts
         && !(screen == Screen.search && root.search-editing);
-    property <length> card-width: min(self.width - root.safe-area-insets.left - root.safe-area-insets.right, 640px);
+    property <length> card-width: min(self.width - root.safe-area-insets.left - root.safe-area-insets.right - 24px, 640px);
     property <bool> wide: self.width > 660px;
     // the video the ⋮ sheet is about
     property <VideoRow> menu-video;
@@ -1093,7 +1118,7 @@ export component StreamTube inherits Window {
                             font-size: 16px;
                             single-line: true;
                             vertical-alignment: center;
-                            selection-background-color: #3ea6ff80;
+                            selection-background-color: Theme.accent.transparentize(0.5);
                             input-type: text;
                             init => { if root.search-editing { self.focus(); } }
                             edited => { root.search-editing = true; root.query-changed(self.text); }
@@ -1433,6 +1458,66 @@ export component StreamTube inherits Window {
                     color: Theme.accent;
                     font-size: 13px;
                     horizontal-alignment: center;
+                }
+                Rectangle { height: 1px; background: Theme.divider; }
+                SectionTitle { text: UiText.tr("Appearance"); }
+                HorizontalLayout {
+                    height: 52px;
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 8px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: UiText.tr("Theme");
+                        color: Theme.text;
+                        font-size: 15px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Chip {
+                        y: (parent.height - self.height) / 2;
+                        label: UiText.tr("Dark");
+                        selected: !root.light-theme;
+                        pressed => { root.choose-theme(false); }
+                    }
+                    Chip {
+                        y: (parent.height - self.height) / 2;
+                        label: UiText.tr("Light");
+                        selected: root.light-theme;
+                        pressed => { root.choose-theme(true); }
+                    }
+                }
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: 4px;
+                    padding-bottom: 14px;
+                    spacing: 10px;
+                    Text {
+                        text: UiText.tr("Accent colour");
+                        color: Theme.text;
+                        font-size: 15px;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        for swatch[index] in root.accents: Rectangle {
+                            width: 34px;
+                            height: 34px;
+                            border-radius: 17px;
+                            border-width: index == root.accent-choice ? 2px : 0px;
+                            border-color: Theme.text;
+                            accessible-role: button;
+                            accessible-label: UiText.tr("Accent colour") + " \{index + 1}";
+                            Rectangle {
+                                width: 26px;
+                                height: 26px;
+                                border-radius: 13px;
+                                background: swatch;
+                            }
+                            TouchArea { clicked => { root.choose-accent(index); } }
+                        }
+                    }
                 }
                 Rectangle { height: 1px; background: Theme.divider; }
                 SectionTitle { text: UiText.tr("General"); }
@@ -1934,8 +2019,8 @@ export component StreamTube inherits Window {
         width: root.width - 24px;
         y: root.height - root.safe-area-insets.bottom - 57px - self.height - 12px;
         height: 48px;
-        border-radius: 8px;
-        background: #323232;
+        border-radius: 12px;
+        background: Theme.light ? #26222a : #3a3440;
         drop-shadow-blur: 12px;
         drop-shadow-color: #00000080;
         opacity: 0;
@@ -1974,8 +2059,8 @@ export component StreamTube inherits Window {
             y: parent.height;
             init => { self.y = parent.height - self.height; }
             animate y { duration: 240ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
-            border-top-left-radius: 14px;
-            border-top-right-radius: 14px;
+            border-top-left-radius: 20px;
+            border-top-right-radius: 20px;
             background: Theme.raised;
             TouchArea { }
             sheet-items := VerticalLayout {
@@ -1990,7 +2075,7 @@ export component StreamTube inherits Window {
                         height: 4px;
                         y: 4px;
                         border-radius: 2px;
-                        background: #717171;
+                        background: Theme.pressed;
                     }
                 }
                 HorizontalLayout {

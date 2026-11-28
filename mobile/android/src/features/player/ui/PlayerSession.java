@@ -1,5 +1,7 @@
 package io.github.shiroksh.streamtube;
 
+import android.graphics.PixelFormat;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.Application;
 import android.app.Dialog;
@@ -69,12 +71,24 @@ import org.json.JSONObject;
 /** One playback: an ExoPlayer, its dialog window and the watch page or Shorts pager. */
 @OptIn(markerClass = UnstableApi.class)
 final class PlayerSession implements Application.ActivityLifecycleCallbacks, Player.Listener {
-    static final int BACKGROUND = 0xFF0F0F0F;
-    static final int SURFACE = 0xFF272727;
-    static final int MINI_SURFACE = 0xFF212121;
-    static final int TEXT = 0xFFF1F1F1;
-    static final int SECONDARY = 0xFFAAAAAA;
+    // The app's colours, after ytm-rs; Settings › Appearance sets them (VideoPlayer.setTheme)
+    // and a page takes them when it opens.
+    static boolean light;
+    static int BACKGROUND = 0xFF0C0A0E;
+    static int SURFACE = 0xFF26222A;
+    static int MINI_SURFACE = 0xFF1C1820;
+    static int TEXT = 0xFFF2F0F5;
+    static int SECONDARY = 0xFFB2ACBA;
+    static int DIVIDER = 0x1FFFFFFF;
+    static int RIPPLE = 0x33FFFFFF;
+    static int GLASS = 0x1AFFFFFF;
+    static int LINK = 0xFF3EA6FF;
+    static int ACCENT = 0xFFFF3048;
+    static int ON_ACCENT = Color.WHITE;
+    // icons and text over the video, whatever the theme
+    static final int ON_VIDEO = 0xFFF2F0F5;
     private static final int MINI_HEIGHT = 64;
+    private static final int MINI_MARGIN = 8;
     private static final int MINI_VIDEO_WIDTH = 114;
     private static final int BOTTOM_NAVIGATION = 56;
     private static final float[] SPEEDS = {0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f};
@@ -114,6 +128,10 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     private Controls controls;
     private WatchPage page;
     private LinearLayout miniBar;
+    // the video's picture, blurred, behind the watch page; it drifts slowly while shown
+    private ImageView backdrop;
+    private View backdropShade;
+    private ValueAnimator drift;
     private TextView miniTitle;
     private TextView miniChannel;
     private ImageView miniPlay;
@@ -207,14 +225,14 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         errorBox.setGravity(Gravity.CENTER);
         errorBox.setPadding(dp(24), 0, dp(24), 0);
         errorBox.setBackgroundColor(Color.BLACK);
-        errorText = label("", 14, TEXT);
+        errorText = label("", 14, ON_VIDEO);
         errorText.setGravity(Gravity.CENTER);
         errorText.setMaxLines(3);
         errorText.setEllipsize(TextUtils.TruncateAt.END);
         errorBox.addView(errorText, new LinearLayout.LayoutParams(-2, -2));
         TextView retry = pill(text("Retry"), null, 0);
         retry.setTextColor(Color.BLACK);
-        retry.setBackground(rounded(TEXT, dp(18)));
+        retry.setBackground(rounded(ON_VIDEO, dp(18)));
         retry.setOnClickListener(view -> retry());
         LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(-2, dp(36));
         retryParams.topMargin = dp(14);
@@ -229,6 +247,9 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         FrameLayout.LayoutParams noteParams = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
         noteParams.setMargins(dp(10), dp(shorts ? 56 : 10), dp(10), 0);
 
+        if (!shorts) {
+            buildBackdrop();
+        }
         root.addView(videoBox, new FrameLayout.LayoutParams(-1, -1));
         if (shorts) {
             videoBox.addView(note, noteParams);
@@ -263,10 +284,17 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         dialog.show();
         Window window = dialog.getWindow();
         if (window != null) {
+            // the floating mini player's rounded corners show the app behind them
+            window.setFormat(PixelFormat.TRANSLUCENT);
             window.setBackgroundDrawable(new ColorDrawable(shorts ? Color.BLACK : BACKGROUND));
             window.setStatusBarColor(Color.BLACK);
             window.setNavigationBarColor(shorts ? Color.BLACK : BACKGROUND);
-            normalUi = window.getDecorView().getSystemUiVisibility();
+            View decor = window.getDecorView();
+            if (light && !shorts && Build.VERSION.SDK_INT >= 26) {
+                decor.setSystemUiVisibility(decor.getSystemUiVisibility()
+                    | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+            }
+            normalUi = decor.getSystemUiVisibility();
             applyWindow();
         }
         activity.getApplication().registerActivityLifecycleCallbacks(this);
@@ -298,6 +326,9 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         handler.removeCallbacksAndMessages(null);
         activity.getApplication().unregisterActivityLifecycleCallbacks(this);
         player.removeListener(this);
+        if (drift != null) {
+            drift.cancel();
+        }
         if (mediaSession != null) {
             PlaybackService.detach(mediaSession);
             mediaSession.release();
@@ -343,6 +374,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             videoBox.setContentDescription(track.title);
         } else {
             page.bind(track, index + 1 < queue.size() || more);
+            RemoteImages.loadBlurred(backdrop, RemoteImages.thumbnail(track.id));
             miniTitle.setText(track.title);
             miniChannel.setText(track.channel);
             controls.reset();
@@ -435,6 +467,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
                 scheduleHide();
             }
         }
+        updateDrift();
         if (miniPlay != null) {
             miniPlay.setImageDrawable(PlayerIcons.of(playing ? PlayerIcons.PAUSE : PlayerIcons.PLAY, TEXT));
         }
@@ -757,9 +790,13 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         attributes.width = ViewGroup.LayoutParams.MATCH_PARENT;
         int pass = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
         if (mini) {
+            // a card floating over the app, clear of its bottom navigation, as in ytm-rs
+            int screen = activity.getWindow().getDecorView().getWidth();
+            attributes.width = screen > dp(2 * MINI_MARGIN) ? screen - dp(2 * MINI_MARGIN)
+                : ViewGroup.LayoutParams.MATCH_PARENT;
             attributes.height = dp(MINI_HEIGHT);
-            attributes.gravity = Gravity.BOTTOM;
-            attributes.y = miniOffset();
+            attributes.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+            attributes.y = miniOffset() + dp(MINI_MARGIN);
             attributes.flags |= pass;
             attributes.flags &= ~WindowManager.LayoutParams.FLAG_DIM_BEHIND;
         } else {
@@ -776,8 +813,17 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
         window.setAttributes(attributes);
-        window.setBackgroundDrawable(new ColorDrawable(mini ? MINI_SURFACE : shorts ? Color.BLACK : BACKGROUND));
-        root.setBackgroundColor(mini ? MINI_SURFACE : shorts ? Color.BLACK : BACKGROUND);
+        if (mini) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            GradientDrawable card = rounded(MINI_SURFACE, dp(16));
+            card.setStroke(Math.max(1, dp(1) / 2), DIVIDER);
+            root.setBackground(card);
+            root.setClipToOutline(true);
+        } else {
+            window.setBackgroundDrawable(new ColorDrawable(shorts ? Color.BLACK : BACKGROUND));
+            root.setClipToOutline(false);
+            root.setBackgroundColor(shorts ? Color.BLACK : BACKGROUND);
+        }
     }
 
     /** The mini player sits on the app's bottom navigation bar, above the system bar. */
@@ -824,6 +870,9 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         }
         videoBox.setLayoutParams(video);
         page.view().setVisibility(!mini && !wide ? View.VISIBLE : View.GONE);
+        backdrop.setVisibility(!mini && !wide ? View.VISIBLE : View.GONE);
+        backdropShade.setVisibility(backdrop.getVisibility());
+        updateDrift();
         miniBar.setVisibility(mini ? View.VISIBLE : View.GONE);
         miniProgress.setVisibility(mini ? View.VISIBLE : View.GONE);
         controls.setMode(mini, wide);
@@ -1030,9 +1079,26 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     private void buildMiniBar() {
         miniBar = new LinearLayout(activity);
         miniBar.setGravity(Gravity.CENTER_VERTICAL);
-        miniBar.setBackgroundColor(MINI_SURFACE);
-        miniBar.setPadding(dp(12), 0, dp(4), 0);
+        miniBar.setPadding(dp(12), 0, dp(2), 0);
         miniBar.setOnClickListener(view -> expand());
+        // a swipe up opens the watch page, a swipe down closes the video
+        GestureDetector swipes = new GestureDetector(activity, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onFling(MotionEvent start, MotionEvent end, float velocityX, float velocityY) {
+                if (Math.abs(velocityY) < Math.abs(velocityX) || Math.abs(velocityY) < dp(400)) {
+                    return false;
+                }
+                if (velocityY < 0) {
+                    expand();
+                } else {
+                    dismiss();
+                }
+                return true;
+            }
+        });
+        miniBar.setOnTouchListener((view, event) -> {
+            swipes.onTouchEvent(event);
+            return false;
+        });
         LinearLayout text = new LinearLayout(activity);
         text.setOrientation(LinearLayout.VERTICAL);
         miniTitle = label("", 14, TEXT);
@@ -1046,10 +1112,13 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         miniBar.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
         miniPlay = iconButton(PlayerIcons.PLAY, 28, text("Play"));
         miniPlay.setOnClickListener(view -> togglePlay());
-        miniBar.addView(miniPlay, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        ImageView close = iconButton(PlayerIcons.CLOSE, 26, text("Close"));
+        miniBar.addView(miniPlay, new LinearLayout.LayoutParams(dp(44), dp(48)));
+        ImageView miniNext = iconButton(PlayerIcons.NEXT, 26, text("Next video"));
+        miniNext.setOnClickListener(view -> skip(1));
+        miniBar.addView(miniNext, new LinearLayout.LayoutParams(dp(44), dp(48)));
+        ImageView close = iconButton(PlayerIcons.CLOSE, 24, text("Close"));
         close.setOnClickListener(view -> dismiss());
-        miniBar.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        miniBar.addView(close, new LinearLayout.LayoutParams(dp(44), dp(48)));
         FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(-1, -1);
         barParams.leftMargin = dp(MINI_VIDEO_WIDTH);
         miniBar.setVisibility(View.GONE);
@@ -1061,12 +1130,58 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         root.addView(miniProgress, new FrameLayout.LayoutParams(-1, dp(2), Gravity.BOTTOM));
     }
 
+    private void buildBackdrop() {
+        backdrop = new ImageView(activity);
+        backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        backdrop.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        root.addView(backdrop, new FrameLayout.LayoutParams(-1, -1));
+        // the picture shows most near the video and fades into the page's colour below
+        backdropShade = new View(activity);
+        int base = BACKGROUND & 0x00FFFFFF;
+        backdropShade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            light ? new int[]{base | 0x99000000, base | 0xE0000000, base | 0xF5000000}
+                : new int[]{base | 0x73000000, base | 0xCC000000, base | 0xF0000000}));
+        root.addView(backdropShade, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    /** The backdrop drifts and breathes while the watch page shows and the video plays. */
+    private void updateDrift() {
+        boolean moving = backdrop != null && !dismissed && !background
+            && backdrop.getVisibility() == View.VISIBLE && player.isPlaying();
+        if (!moving) {
+            if (drift != null && drift.isStarted()) {
+                drift.pause();
+            }
+            return;
+        }
+        if (drift == null) {
+            drift = ValueAnimator.ofFloat(0f, 1f);
+            drift.setDuration(18000);
+            drift.setRepeatCount(ValueAnimator.INFINITE);
+            drift.setRepeatMode(ValueAnimator.REVERSE);
+            drift.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+            drift.addUpdateListener(animation -> {
+                float f = (float) animation.getAnimatedValue();
+                float scale = 1.12f + 0.1f * f;
+                backdrop.setScaleX(scale);
+                backdrop.setScaleY(scale);
+                backdrop.setTranslationX(dp(14) * (f - 0.5f) * 2f);
+                backdrop.setRotation(2f * (f - 0.5f));
+            });
+            drift.start();
+        } else if (drift.isPaused()) {
+            drift.resume();
+        } else if (!drift.isStarted()) {
+            drift.start();
+        }
+    }
+
     private void buildShorts() {
         View tap = new View(activity);
         tap.setOnClickListener(view -> togglePlay());
         videoBox.addView(tap, 1, new FrameLayout.LayoutParams(-1, -1));
 
-        ImageView back = iconButton(PlayerIcons.BACK, 26, text("Back"));
+        ImageView back = videoButton(PlayerIcons.BACK, 26, text("Back"));
         back.setOnClickListener(view -> dismiss());
         FrameLayout.LayoutParams backParams = new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.START);
         backParams.setMargins(dp(4), dp(28), 0, 0);
@@ -1188,7 +1303,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     }
 
     android.graphics.drawable.Drawable ripple() {
-        return new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), null,
+        return new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(RIPPLE), null,
             new ColorDrawable(Color.WHITE));
     }
 
@@ -1198,15 +1313,15 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         return drawable;
     }
 
-    /** A rounded #272727 pill with an optional leading icon. */
+    /** A rounded pill over the page, with an optional leading icon. */
     TextView pill(String value, String iconPath, int iconDp) {
         TextView view = label(value, 14, TEXT);
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         view.setGravity(Gravity.CENTER_VERTICAL);
         view.setSingleLine(true);
         view.setPadding(dp(14), 0, dp(14), 0);
-        view.setBackground(new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(0x33FFFFFF),
-            rounded(SURFACE, dp(18)), null));
+        view.setBackground(new android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(RIPPLE),
+            rounded(GLASS, dp(18)), null));
         if (iconPath != null) {
             view.setCompoundDrawablesRelative(icon(iconPath, iconDp), null, null, null);
             view.setCompoundDrawablePadding(dp(6));
@@ -1215,15 +1330,39 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     }
 
     ImageView iconButton(String path, int sizeDp, String description) {
+        return iconButton(path, sizeDp, description, TEXT);
+    }
+
+    /** An icon button over the video: light whatever the theme. */
+    ImageView videoButton(String path, int sizeDp, String description) {
+        return iconButton(path, sizeDp, description, ON_VIDEO);
+    }
+
+    ImageView iconButton(String path, int sizeDp, String description, int tint) {
         ImageView view = new ImageView(activity);
-        view.setImageDrawable(PlayerIcons.of(path, TEXT));
+        view.setImageDrawable(PlayerIcons.of(path, tint));
         int padding = Math.max(0, (dp(48) - dp(sizeDp)) / 2);
         view.setPadding(padding, padding, padding, padding);
         view.setScaleType(ImageView.ScaleType.FIT_CENTER);
         view.setContentDescription(description);
         view.setBackground(new android.graphics.drawable.RippleDrawable(
-            ColorStateList.valueOf(0x33FFFFFF), null, null));
+            ColorStateList.valueOf(tint == ON_VIDEO ? 0x33FFFFFF : RIPPLE), null, null));
         return view;
+    }
+
+    static void applyTheme(boolean isLight, int accent, int onAccent) {
+        light = isLight;
+        BACKGROUND = isLight ? 0xFFF6F4F8 : 0xFF0C0A0E;
+        SURFACE = isLight ? 0xFFE9E5EE : 0xFF26222A;
+        MINI_SURFACE = isLight ? 0xFFFCFBFD : 0xFF1C1820;
+        TEXT = isLight ? 0xFF16141A : 0xFFF2F0F5;
+        SECONDARY = isLight ? 0xFF56525E : 0xFFB2ACBA;
+        DIVIDER = isLight ? 0x2216141A : 0x1FFFFFFF;
+        RIPPLE = isLight ? 0x2216141A : 0x33FFFFFF;
+        GLASS = isLight ? 0x1216141A : 0x1FFFFFFF;
+        LINK = isLight ? 0xFF065FD4 : 0xFF3EA6FF;
+        ACCENT = accent;
+        ON_ACCENT = onAccent;
     }
 
     // ───────────── lifecycle ─────────────
@@ -1238,6 +1377,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         }
         // the video goes on as sound; a small picture is enough until the app is back
         background = true;
+        updateDrift();
         player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
             .setMaxVideoSize(426, 240).build());
     }
@@ -1245,6 +1385,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
     @Override public void onActivityStarted(Activity host) {
         if (host == activity && background) {
             background = false;
+            updateDrift();
             player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
                 .clearVideoSizeConstraints().build());
         }
@@ -1381,7 +1522,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             chrome.setBackgroundColor(0x66000000);
             addView(chrome, new LayoutParams(-1, -1));
 
-            ImageView minimize = iconButton(PlayerIcons.CHEVRON_DOWN, 28, text("Minimize"));
+            ImageView minimize = videoButton(PlayerIcons.CHEVRON_DOWN, 28, text("Minimize"));
             minimize.setOnClickListener(view -> {
                 if (wide) {
                     setFullscreen(false);
@@ -1390,20 +1531,20 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
                 }
             });
             chrome.addView(minimize, new LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.START));
-            ImageView settings = iconButton(PlayerIcons.SETTINGS, 24, text("Settings"));
+            ImageView settings = videoButton(PlayerIcons.SETTINGS, 24, text("Settings"));
             settings.setOnClickListener(view -> openSettings());
             chrome.addView(settings, new LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.END));
 
             LinearLayout center = new LinearLayout(activity);
             center.setGravity(Gravity.CENTER);
-            previous = iconButton(PlayerIcons.PREVIOUS, 32, text("Previous video"));
+            previous = videoButton(PlayerIcons.PREVIOUS, 32, text("Previous video"));
             previous.setOnClickListener(view -> move(-1));
-            play = iconButton(PlayerIcons.PAUSE, 44, text("Pause"));
+            play = videoButton(PlayerIcons.PAUSE, 44, text("Pause"));
             play.setOnClickListener(view -> {
                 togglePlay();
                 scheduleHide();
             });
-            next = iconButton(PlayerIcons.NEXT, 32, text("Next video"));
+            next = videoButton(PlayerIcons.NEXT, 32, text("Next video"));
             next.setOnClickListener(view -> move(1));
             center.addView(previous, new LinearLayout.LayoutParams(dp(56), dp(56)));
             LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(dp(72), dp(72));
@@ -1417,7 +1558,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             bottomRow.setPadding(dp(12), 0, 0, 0);
             time = label("", 12, Color.WHITE);
             bottomRow.addView(time, new LinearLayout.LayoutParams(0, -2, 1));
-            fullscreenButton = iconButton(PlayerIcons.FULLSCREEN, 24, text("Fullscreen"));
+            fullscreenButton = videoButton(PlayerIcons.FULLSCREEN, 24, text("Fullscreen"));
             fullscreenButton.setOnClickListener(view -> setFullscreen(!wide));
             bottomRow.addView(fullscreenButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
             chrome.addView(bottomRow, new LayoutParams(-1, dp(44), Gravity.BOTTOM));
@@ -1488,7 +1629,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
 
         void setMode(boolean mini, boolean wide) {
             this.wide = wide;
-            fullscreenButton.setImageDrawable(PlayerIcons.of(wide ? PlayerIcons.FULLSCREEN_EXIT : PlayerIcons.FULLSCREEN, TEXT));
+            fullscreenButton.setImageDrawable(PlayerIcons.of(wide ? PlayerIcons.FULLSCREEN_EXIT : PlayerIcons.FULLSCREEN, ON_VIDEO));
             fullscreenButton.setContentDescription(text(wide ? "Exit fullscreen" : "Fullscreen"));
             LayoutParams bar = (LayoutParams) timeBar.getLayoutParams();
             bar.bottomMargin = wide ? dp(28) : 0;
@@ -1521,7 +1662,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
             play.setVisibility(centre);
             previous.setVisibility(centre);
             next.setVisibility(centre);
-            play.setImageDrawable(PlayerIcons.of(ended ? PlayerIcons.REPLAY : playing ? PlayerIcons.PAUSE : PlayerIcons.PLAY, TEXT));
+            play.setImageDrawable(PlayerIcons.of(ended ? PlayerIcons.REPLAY : playing ? PlayerIcons.PAUSE : PlayerIcons.PLAY, ON_VIDEO));
             play.setContentDescription(text(playing ? "Pause" : "Play"));
             previous.setAlpha(index > 0 ? 1f : 0.4f);
             next.setAlpha(index + 1 < queue.size() || more ? 1f : 0.4f);
@@ -1538,7 +1679,7 @@ final class PlayerSession implements Application.ActivityLifecycleCallbacks, Pla
         private void showTime(long position, long duration) {
             if (live) {
                 time.setText("● LIVE");
-                time.setTextColor(TimeBar.ACCENT);
+                time.setTextColor(ACCENT);
             } else {
                 time.setTextColor(Color.WHITE);
                 time.setText(TimeBar.format(position) + " / " + TimeBar.format(Math.max(0, duration)));

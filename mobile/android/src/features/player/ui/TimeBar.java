@@ -17,7 +17,6 @@ final class TimeBar extends View {
         void onSeek(long position);
     }
 
-    static final int ACCENT = 0xFFFF0033;
     private final Paint track = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint buffer = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint played = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -38,7 +37,7 @@ final class TimeBar extends View {
         density = context.getResources().getDisplayMetrics().density;
         track.setColor(0x4DFFFFFF);
         buffer.setColor(0x80FFFFFF);
-        played.setColor(ACCENT);
+        played.setColor(PlayerSession.ACCENT);
         skip.setColor(0xFF00D400);
         mark.setColor(0xFFFFD600);
     }

@@ -2,6 +2,9 @@ package io.github.shiroksh.streamtube;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.TransitionDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.LruCache;
@@ -59,6 +62,87 @@ final class RemoteImages {
                 }
             });
         });
+    }
+
+    /**
+     * A soft, blurred copy of a picture that fades in over the previous one: the backdrop
+     * of the watch page, as ytm-rs draws the album art behind everything.
+     */
+    static void loadBlurred(ImageView view, String url) {
+        String key = "blur:" + url;
+        view.setTag(key);
+        Bitmap cached = CACHE.get(key);
+        if (cached != null) {
+            crossFade(view, cached);
+            return;
+        }
+        POOL.execute(() -> {
+            Bitmap source = fetch(url, 160);
+            Bitmap blurred = source == null ? null : blur(source);
+            MAIN.post(() -> {
+                if (blurred == null) {
+                    return;
+                }
+                CACHE.put(key, blurred);
+                if (key.equals(view.getTag())) {
+                    crossFade(view, blurred);
+                }
+            });
+        });
+    }
+
+    private static void crossFade(ImageView view, Bitmap bitmap) {
+        Drawable next = new BitmapDrawable(view.getResources(), bitmap);
+        Drawable previous = view.getDrawable();
+        if (previous instanceof TransitionDrawable) {
+            previous = ((TransitionDrawable) previous).getDrawable(1);
+        }
+        if (previous == null) {
+            view.setImageDrawable(next);
+            return;
+        }
+        TransitionDrawable fade = new TransitionDrawable(new Drawable[]{previous, next});
+        fade.setCrossFadeEnabled(true);
+        view.setImageDrawable(fade);
+        fade.startTransition(450);
+    }
+
+    /** Shrinks the picture to a few dozen pixels and box-blurs it; scaling it up smooths the rest. */
+    private static Bitmap blur(Bitmap source) {
+        int width = 40;
+        int height = Math.max(1, source.getHeight() * width / Math.max(1, source.getWidth()));
+        Bitmap small = Bitmap.createScaledBitmap(source, width, height, true);
+        int[] pixels = new int[width * height];
+        small.getPixels(pixels, 0, width, 0, 0, width, height);
+        int[] spare = new int[pixels.length];
+        for (int pass = 0; pass < 3; pass++) {
+            boxBlur(pixels, spare, width, height, 1, width, 3);
+            boxBlur(spare, pixels, height, width, width, 1, 3);
+        }
+        Bitmap out = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        out.setPixels(pixels, 0, width, 0, 0, width, height);
+        return out;
+    }
+
+    /** One blur pass along rows (step 1) or columns (step = width) of an ARGB image. */
+    private static void boxBlur(int[] in, int[] out, int length, int lines, int step, int lineStep, int radius) {
+        for (int line = 0; line < lines; line++) {
+            int base = line * lineStep;
+            for (int i = 0; i < length; i++) {
+                int r = 0;
+                int g = 0;
+                int b = 0;
+                int count = 0;
+                for (int k = Math.max(0, i - radius); k <= Math.min(length - 1, i + radius); k++) {
+                    int pixel = in[base + k * step];
+                    r += (pixel >> 16) & 0xFF;
+                    g += (pixel >> 8) & 0xFF;
+                    b += pixel & 0xFF;
+                    count++;
+                }
+                out[base + i * step] = 0xFF000000 | ((r / count) << 16) | ((g / count) << 8) | (b / count);
+            }
+        }
     }
 
     private static boolean trusted(URL url) {

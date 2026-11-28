@@ -26,9 +26,12 @@ import org.json.JSONObject;
 
 /** The scrolling part of the watch page under the video, and its comments sheet. */
 final class WatchPage {
-    private static final int TEXT = PlayerSession.TEXT;
-    private static final int SECONDARY = PlayerSession.SECONDARY;
-    private static final int SURFACE = PlayerSession.SURFACE;
+    // the theme's colours when this page opened
+    private final int TEXT = PlayerSession.TEXT;
+    private final int SECONDARY = PlayerSession.SECONDARY;
+    private final int SURFACE = PlayerSession.SURFACE;
+    // buttons and cards over the blurred picture behind the page
+    private final int GLASS = PlayerSession.GLASS;
 
     private final PlayerSession s;
     private final Activity activity;
@@ -123,7 +126,7 @@ final class WatchPage {
         names.addView(subscribers);
         owner.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
         channelRow.addView(owner, new LinearLayout.LayoutParams(0, s.dp(56), 1));
-        subscribe = s.label(s.text("Subscribe"), 14, Color.BLACK);
+        subscribe = s.label(s.text("Subscribe"), 14, PlayerSession.ON_ACCENT);
         subscribe.setTypeface(medium);
         subscribe.setGravity(Gravity.CENTER);
         subscribe.setPadding(s.dp(16), 0, s.dp(16), 0);
@@ -144,11 +147,11 @@ final class WatchPage {
         pills.setPadding(s.dp(12), 0, s.dp(12), 0);
         LinearLayout rating = new LinearLayout(activity);
         rating.setGravity(Gravity.CENTER_VERTICAL);
-        rating.setBackground(s.rounded(SURFACE, s.dp(18)));
+        rating.setBackground(s.rounded(GLASS, s.dp(18)));
         likes = ratingHalf(PlayerIcons.LIKE);
         rating.addView(likes, new LinearLayout.LayoutParams(-2, -1));
         View divider = new View(activity);
-        divider.setBackgroundColor(0x33FFFFFF);
+        divider.setBackgroundColor(PlayerSession.DIVIDER);
         rating.addView(divider, new LinearLayout.LayoutParams(s.dp(1), s.dp(22)));
         dislikes = ratingHalf(PlayerIcons.DISLIKE);
         rating.addView(dislikes, new LinearLayout.LayoutParams(-2, -1));
@@ -241,7 +244,7 @@ final class WatchPage {
         sheetHeader.addView(close, new LinearLayout.LayoutParams(s.dp(48), s.dp(48)));
         sheet.addView(sheetHeader, new LinearLayout.LayoutParams(-1, s.dp(56)));
         View rule = new View(activity);
-        rule.setBackgroundColor(0x1FFFFFFF);
+        rule.setBackgroundColor(PlayerSession.DIVIDER);
         sheet.addView(rule, new LinearLayout.LayoutParams(-1, s.dp(1)));
         sheetScroll = new ScrollView(activity);
         LinearLayout sheetContent = new LinearLayout(activity);
@@ -475,7 +478,7 @@ final class WatchPage {
         description.setEllipsize(value ? null : TextUtils.TruncateAt.END);
         if (value) {
             Linkify.addLinks(description, Linkify.WEB_URLS);
-            description.setLinkTextColor(0xFF3EA6FF);
+            description.setLinkTextColor(PlayerSession.LINK);
             description.setMovementMethod(LinkMovementMethod.getInstance());
         } else {
             description.setText(description.getText().toString());
@@ -527,9 +530,9 @@ final class WatchPage {
 
     private void setSubscribed(boolean following) {
         subscribe.setText(following ? s.text("Subscribed") : s.text("Subscribe"));
-        subscribe.setTextColor(following ? TEXT : Color.BLACK);
+        subscribe.setTextColor(following ? TEXT : PlayerSession.ON_ACCENT);
         subscribe.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33808080),
-            s.rounded(following ? SURFACE : TEXT, s.dp(18)), null));
+            s.rounded(following ? GLASS : PlayerSession.ACCENT, s.dp(18)), null));
     }
 
     // ───────────── rows ─────────────
@@ -607,7 +610,7 @@ final class WatchPage {
         actions.addView(like);
         String replies = comment.optString("replies", "");
         if (!replies.isEmpty() && !"0".equals(replies)) {
-            TextView answers = s.label(replies + " " + s.text("replies"), 12, 0xFF3EA6FF);
+            TextView answers = s.label(replies + " " + s.text("replies"), 12, PlayerSession.LINK);
             answers.setPadding(s.dp(20), 0, 0, 0);
             actions.addView(answers);
         }
@@ -636,8 +639,8 @@ final class WatchPage {
         LinearLayout card = new LinearLayout(activity);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(s.dp(12), s.dp(10), s.dp(12), s.dp(12));
-        card.setBackground(new RippleDrawable(ColorStateList.valueOf(0x22FFFFFF),
-            s.rounded(SURFACE, s.dp(12)), null));
+        card.setBackground(new RippleDrawable(ColorStateList.valueOf(PlayerSession.RIPPLE),
+            s.rounded(GLASS, s.dp(16)), null));
         return card;
     }
 

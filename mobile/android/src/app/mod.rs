@@ -157,6 +157,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
         .into(),
     );
     select_language(&window, library.language, device_language);
+    window.set_accents(
+        Rc::new(VecModel::from(
+            ACCENTS
+                .iter()
+                .map(|(color, _)| slint::Color::from_argb_encoded(*color))
+                .collect::<Vec<_>>(),
+        ))
+        .into(),
+    );
+    apply_appearance(&window, library.light_theme, library.accent);
     window.set_thumbnails(library.thumbnails);
     apply_extras(&window, library.extras);
     // TV sign-in needs only a browser, so every build can connect an account
@@ -568,6 +578,28 @@ fn bind_settings(window: &StreamTube, state: &State) {
     });
 
     let (target, app) = (window.as_weak(), state.clone());
+    window.on_choose_theme(move |light| {
+        let Some(ui) = target.upgrade() else { return };
+        edit_library(&ui, &app, |library| library.light_theme = light);
+        let library = &app.borrow().library;
+        apply_appearance(&ui, library.light_theme, library.accent);
+    });
+
+    let (target, app) = (window.as_weak(), state.clone());
+    window.on_choose_accent(move |choice| {
+        let Some(ui) = target.upgrade() else { return };
+        let Ok(choice) = usize::try_from(choice) else {
+            return;
+        };
+        if choice >= ACCENTS.len() {
+            return;
+        }
+        edit_library(&ui, &app, |library| library.accent = choice);
+        let library = &app.borrow().library;
+        apply_appearance(&ui, library.light_theme, library.accent);
+    });
+
+    let (target, app) = (window.as_weak(), state.clone());
     window.on_toggle_thumbnails(move || {
         let Some(ui) = target.upgrade() else { return };
         edit_library(&ui, &app, |library| {
@@ -720,6 +752,29 @@ fn check_updates(ui: &StreamTube, manual: bool) {
                 Err(_) => ui.set_update_state(UPDATE_IDLE),
             });
         });
+}
+
+/// The accents Settings › Appearance offers, as ARGB, and whether text on each is dark.
+/// The first is ytm-rs's own red.
+const ACCENTS: [(u32, bool); 8] = [
+    (0xffff3048, false),
+    (0xffff4e8a, false),
+    (0xffff7a1a, true),
+    (0xfff5b400, true),
+    (0xff1ed760, true),
+    (0xff14b8a6, true),
+    (0xff3ea6ff, true),
+    (0xff9b6bff, false),
+];
+
+fn apply_appearance(ui: &StreamTube, light: bool, accent: usize) {
+    let (color, dark_text) = ACCENTS.get(accent).copied().unwrap_or(ACCENTS[0]);
+    let on_accent = if dark_text { 0xff16141a } else { 0xffffffff };
+    ui.set_light_theme(light);
+    ui.set_accent_color(slint::Color::from_argb_encoded(color));
+    ui.set_on_accent_color(slint::Color::from_argb_encoded(on_accent));
+    ui.set_accent_choice(i32::try_from(accent.min(ACCENTS.len() - 1)).unwrap_or_default());
+    player::set_theme(light, color, on_accent);
 }
 
 fn apply_extras(ui: &StreamTube, settings: Extras) {

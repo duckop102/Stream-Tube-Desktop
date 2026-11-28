@@ -19,6 +19,10 @@ pub struct Library {
     pub thumbnails: bool,
     pub extras: Extras,
     pub connected_account: bool,
+    /// Settings › Appearance: the light theme instead of the dark one.
+    pub light_theme: bool,
+    /// Settings › Appearance: the accent, an index into the app's accent colours.
+    pub accent: usize,
 }
 
 impl Default for Library {
@@ -32,6 +36,8 @@ impl Default for Library {
             thumbnails: true,
             extras: Extras::default(),
             connected_account: false,
+            light_theme: false,
+            accent: 0,
         }
     }
 }

@@ -1,6 +1,10 @@
 package io.github.shiroksh.streamtube;
 
 import android.app.Activity;
+import android.os.Build;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowInsetsController;
 import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
@@ -60,6 +64,34 @@ public final class VideoPlayer {
                 event(session, CLOSED, "");
                 Toast.makeText(activity, labels.optString("Player unavailable", "Player unavailable"),
                     Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    /**
+     * Settings › Appearance: the watch page's colours from the next video on, and dark or
+     * light icons in the app's own status and navigation bars.
+     */
+    public static void setTheme(Activity activity, boolean light, int accent, int onAccent) {
+        activity.runOnUiThread(() -> {
+            PlayerSession.applyTheme(light, accent, onAccent);
+            Window window = activity.getWindow();
+            if (window == null) {
+                return;
+            }
+            if (Build.VERSION.SDK_INT >= 30) {
+                WindowInsetsController bars = window.getInsetsController();
+                if (bars != null) {
+                    int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                    bars.setSystemBarsAppearance(light ? mask : 0, mask);
+                }
+            } else {
+                View decor = window.getDecorView();
+                int mask = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                    | (Build.VERSION.SDK_INT >= 26 ? View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0);
+                int flags = decor.getSystemUiVisibility();
+                decor.setSystemUiVisibility(light ? flags | mask : flags & ~mask);
             }
         });
     }

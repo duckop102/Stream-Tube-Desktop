@@ -7,7 +7,7 @@ mod android;
 #[cfg(target_os = "android")]
 pub use android::{
     append, listen, open, set_comments, set_details, set_extras, set_following, set_stream,
-    update_saved,
+    set_theme, update_saved,
 };
 
 /// Event kinds the Java player reports through `VideoPlayer.event(session, kind, id)`.
@@ -93,3 +93,6 @@ pub fn set_following(_: i32, _: &str, _: bool) {}
 
 #[cfg(not(target_os = "android"))]
 pub fn set_extras(_: i32, _: &str, _: &str) {}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_theme(_: bool, _: u32, _: u32) {}

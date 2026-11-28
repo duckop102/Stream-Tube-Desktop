@@ -49,6 +49,24 @@ pub fn open(
     })
 }
 
+/// The colours of the watch page and of the app's system bars (Settings › Appearance).
+pub fn set_theme(light: bool, accent: u32, on_accent: u32) {
+    let _ = with_application_class(CLASS, |env, activity, class| {
+        env.call_static_method(
+            class,
+            jni_str!("setTheme"),
+            jni_sig!("(Landroid/app/Activity;ZII)V"),
+            &[
+                JValue::Object(activity),
+                JValue::Bool(light),
+                JValue::Int(accent as i32),
+                JValue::Int(on_accent as i32),
+            ],
+        )?;
+        Ok(())
+    });
+}
+
 pub fn append(session: i32, queue: &str, more: bool, failed: bool) {
     let _ = with_application_class(CLASS, |env, activity, class| {
         let queue = env.new_string(queue)?;
